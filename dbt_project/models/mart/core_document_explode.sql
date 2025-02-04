@@ -48,7 +48,7 @@ fbads AS (
     campaign_date as date_fb,
     sum(spend)  as costo_clp_fbads 
     FROM {{ ref('stg_meta_ads') }}
-    GROUP by all
+    GROUP by all 
 )
 ,
 agg AS (
@@ -67,8 +67,8 @@ CASE
         'NOTA DE CRÉDITO ELECTRÓNICA T', 'FACTURA DE COMPRA ELECTRÓNICA', 'BOLETA ELECTRÓNICA T', 'FACTURA ELECTRÓNICA T', 'NOTA DE DÉBITO ELECTRÓNICA T'
     ) THEN 0
     WHEN agg.compras_mismo_dia < 2 OR agg.compras_mismo_dia IS NULL THEN f.costo_clp_fbads
-    ELSE f.costo_clp_fbads / agg.compras_mismo_dia
-END AS inversion_desglosada_fbads
+    ELSE f.costo_clp_fbads / agg.compras_mismo_dia 
+END AS inversion_desglosada_fbads 
 FROM documents d 
 LEFT JOIN fbads f ON d.fecha_documento = f.date_fb
 LEFT JOIN agg ON d.fecha_documento = agg.fecha_documento

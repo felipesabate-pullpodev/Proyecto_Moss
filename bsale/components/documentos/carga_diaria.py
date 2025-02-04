@@ -1,18 +1,26 @@
 import os
 import requests
 import json
+import sys
 import time
 import logging
 import pandas as pd
 from dotenv import load_dotenv
 from google.cloud import bigquery
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+import pytz  # 📌 Para manejar la zona horaria de Chile
 
 # Cargar variables de entorno desde .env
 load_dotenv()
 
-# Configurar el logger
-logging.basicConfig(level=logging.INFO)
+# 📌 Configurar logging para que use solo STDOUT y evitar que Prefect lo marque como error
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s",
+    datefmt="%H:%M:%S",
+    handlers=[logging.StreamHandler(sys.stdout)]  # 🔹 Enviar logs solo a STDOUT
+)
+
 logger = logging.getLogger(__name__)
 
 # Token de acceso
@@ -22,10 +30,13 @@ ACCESS_TOKEN = os.getenv("BSALE_ACCESS_TOKEN")
 BIGQUERY_PROJECT_ID = os.getenv("BIGQUERY_PROJECT_ID")
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET")
 BIGQUERY_TABLE = os.getenv("BIGQUERY_TABLE")
-BIGQUERY_KEY_PATH = os.getenv("BIGQUERY_KEY_PATH")
+BIGQUERY_KEY_PATH = r"C:\Users\Felip\Desktop\PULLPO\Repositorio Demos\ELT&V\Proyecto_Moss\env\moss-448416-4aea07bf8473.json"
 
 # Tamaño del batch para enviar datos a BigQuery
 BATCH_SIZE = 500  
+
+# 📌 Zona horaria de Chile
+CHILE_TZ = pytz.timezone("America/Santiago")
 
 def fetch_existing_ids_from_bigquery():
     """
@@ -35,14 +46,14 @@ def fetch_existing_ids_from_bigquery():
         client = bigquery.Client.from_service_account_json(BIGQUERY_KEY_PATH, project=BIGQUERY_PROJECT_ID)
         table_id = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
 
-        query = f"SELECT id FROM {table_id}"
+        query = f"SELECT id FROM `{table_id}`"
         result = client.query(query).result()
 
         existing_ids = {row.id for row in result}  # Convierte la consulta en un conjunto de IDs
-        logger.info(f"🔍 Se encontraron {len(existing_ids)} documentos ya existentes en BigQuery.")
+        logger.info(f" Se encontraron {len(existing_ids)} documentos ya existentes en BigQuery.")
         return existing_ids
     except Exception as e:
-        logger.error(f"❌ Error al consultar BigQuery para verificar duplicados: {e}")
+        logger.error(f" Error al consultar BigQuery para verificar duplicados: {e}")
         return set()
 
 def load_to_bigquery(df):
@@ -50,7 +61,7 @@ def load_to_bigquery(df):
     Carga un DataFrame a BigQuery en lotes para evitar duplicados.
     """
     if df.empty:
-        logger.info("⚠️ No hay datos nuevos para cargar en BigQuery.")
+        logger.info(" No hay datos nuevos para cargar en BigQuery.")
         return
 
     try:
@@ -68,9 +79,9 @@ def load_to_bigquery(df):
         load_job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
         load_job.result()  # Espera a que termine la carga
 
-        logger.info(f"✅ Cargados {len(df)} registros nuevos a BigQuery en la tabla {table_id}.")
+        logger.info(f" Cargados {len(df)} registros nuevos a BigQuery en la tabla {table_id}.")
     except Exception as e:
-        logger.error(f"❌ Error al cargar datos en BigQuery: {e}")
+        logger.error(f" Error al cargar datos en BigQuery: {e}")
 
 def fetch_all_pages(base_url, headers):
     """
@@ -91,7 +102,7 @@ def fetch_all_pages(base_url, headers):
             items = data.get('items', [])
             all_items.extend(items)
 
-            logger.info(f"📄 Procesado offset {offset}: {len(items)} documentos encontrados.")
+            logger.info(f" Procesado offset {offset}: {len(items)} documentos encontrados.")
 
             if len(items) < limit:
                 break  # Si no hay más documentos, salimos del loop
@@ -137,10 +148,19 @@ def extract_data(days_back=2):
     """
     Extrae documentos desde Bsale en un rango de fechas determinado usando expand.
     """
-    start_date = int((datetime.now(timezone.utc) - timedelta(days=days_back + 1)).timestamp())
-    end_date = int(datetime.now(timezone.utc).timestamp())
+    # 📌 Obtener la fecha actual en Chile
+    now_chile = datetime.now(CHILE_TZ)
+    
+    # 📌 Calcular el rango de fechas en la zona horaria de Chile
+    start_date_chile = now_chile - timedelta(days=days_back + 1)
+    end_date_chile = now_chile
 
-    logger.info(f"⏳ Iniciando extracción de documentos desde {datetime.utcfromtimestamp(start_date)} hasta {datetime.utcfromtimestamp(end_date)}")
+    # 📌 Convertir las fechas a timestamps en UTC
+    start_date_utc = int(start_date_chile.astimezone(pytz.utc).timestamp())
+    end_date_utc = int(end_date_chile.astimezone(pytz.utc).timestamp())
+
+    logger.info(f" Iniciando extracción de documentos desde {start_date_chile} hasta {end_date_chile} (Hora Chile)")
+    logger.info(f" Convertido a timestamps UTC: {start_date_utc} - {end_date_utc}")
 
     headers = {
         'Content-Type': 'application/json',
@@ -149,7 +169,7 @@ def extract_data(days_back=2):
 
     base_url = (
         "https://api.bsale.cl/v1/documents.json"
-        f"?emissiondaterange=[{start_date},{end_date}]"
+        f"?emissiondaterange=[{start_date_utc},{end_date_utc}]"
         "&expand=document_type,client,office,user,details,references,document_taxes,sellers,payments"
     )
 
@@ -170,18 +190,16 @@ def extract_data(days_back=2):
             buffer.append(processed_doc)
             new_documents += 1
 
-        # Cargar en lotes de BATCH_SIZE registros
         if len(buffer) >= BATCH_SIZE:
             df = pd.DataFrame(buffer)
             load_to_bigquery(df)
             buffer = []
 
-    # Cargar el último lote restante
     if buffer:
         df = pd.DataFrame(buffer)
         load_to_bigquery(df)
 
-    logger.info(f"✅ Extracción y carga completada. Total documentos procesados: {new_documents}")
+    logger.info(f" Extracción y carga completada. Total documentos procesados: {new_documents}")
 
 if __name__ == "__main__":
-    extract_data(days_back=2)  # Extrae datos de los últimos 4 días
+    extract_data(days_back=2)

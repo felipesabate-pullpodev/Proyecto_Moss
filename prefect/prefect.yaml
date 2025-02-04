@@ -1,0 +1,22 @@
+prefect-version: "3.1.15"
+name: "Configuración de Deployment"
+
+# Opcional: acciones para preparar el entorno (build y push) que en este ejemplo dejamos en null.
+build: null
+push: null
+
+# Instrucciones para preparar el entorno de ejecución.
+# En este ejemplo, simplemente se establece el directorio de trabajo.
+pull:
+  - prefect.deployments.steps.set_working_directory:
+      directory: "."
+
+deployments:
+  - name: daily_job         # Este es el nombre del deployment
+    version: "1.0"          # Puedes versionarlo a tu gusto
+    description: "Deployment para daily_flow"
+    schedule: "0 0 * * *"   # Expresión cron: diario a medianoche (ajústalo según necesites)
+    entrypoint: "main.py:daily_flow"  # Ubicación y nombre de la función flow
+    parameters: {}          # Parámetros que reciba el flow (si aplica)
+    work_pool:
+      name: mi_work_pool    # El work pool que has creado

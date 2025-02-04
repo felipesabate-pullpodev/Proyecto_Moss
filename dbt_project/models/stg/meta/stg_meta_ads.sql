@@ -24,6 +24,5 @@ SELECT
     -- por ejemplo:
     account_id,
     account_name,
-    objective,
     frequency
 FROM `moss-448416.dataset.meta_ads_insights_platform_and_device`
