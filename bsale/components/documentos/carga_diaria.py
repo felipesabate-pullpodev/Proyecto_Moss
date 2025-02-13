@@ -144,7 +144,7 @@ def process_document(document_data):
         logger.error(f"❌ Error al procesar el documento ID {document_data.get('id')}: {e}")
         return None
 
-def extract_data(days_back=2):
+def extract_data(days_back=3):
     """
     Extrae documentos desde Bsale en un rango de fechas determinado usando expand.
     """
@@ -202,4 +202,4 @@ def extract_data(days_back=2):
     logger.info(f" Extracción y carga completada. Total documentos procesados: {new_documents}")
 
 if __name__ == "__main__":
-    extract_data(days_back=2)
+    extract_data(days_back=3)

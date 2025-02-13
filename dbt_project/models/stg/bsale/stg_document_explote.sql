@@ -55,17 +55,20 @@ d.detail_netDiscount AS detail_net_discount,
 d.detail_totalDiscount AS detail_total_discount, 
 d.office_id,
 d.variant_description,
+CASE
+  WHEN d.variant_description = 'S' THEN 1
+  WHEN d.variant_description = 'M' THEN 2
+  WHEN d.variant_description = 'L' THEN 3
+  WHEN d.variant_description = 'XL' THEN 4
+  WHEN d.variant_description = 'XXL' THEN 5
+  WHEN d.variant_description = '3XL' THEN 6
+  WHEN d.variant_description = '4XL' THEN 7
+END AS orden_tallas,
 d.variant_code,
 d.variant_id,
-mp.tipo_producto,
-mp.nombre_producto,
-mp.costo_neto,
-mp.precio_unitario,
 o.name AS office
 FROM documents d
 LEFT JOIN document_type dt 
     ON document_type_id = dt.document_id 
-LEFT JOIN maestra_productos mp
-    ON d.variant_code = mp.sku
 LEFT JOIN office o
     ON d.office_id = o.id
