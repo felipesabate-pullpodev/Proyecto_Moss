@@ -71,9 +71,9 @@ def run_dbt_run():
     dbt_project_dir = os.path.abspath(os.path.join(script_dir, "..", "dbt_project"))
     logging.info(f"Ejecutando DBT en el directorio: {dbt_project_dir}")
 
-    # Agregar variables de entorno para Prefect
+    # Agregar variables de entorno
     env = os.environ.copy()
-    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegurar que usa el perfil de dbt correcto
+    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Perfil dbt
 
     result = subprocess.run(
         ["dbt", "run"],
@@ -102,7 +102,7 @@ def run_dbt_run():
         for line in result.stderr.splitlines():
             logging.error(f"DBT STDERR: {line}")
 
-    # Si falla, guardar STDERR en un archivo para analizarlo
+    # Si falla, guarda STDERR en un archivo
     if result.returncode != 0:
         error_log_path = os.path.join(dbt_project_dir, "dbt_error_log.txt")
         with open(error_log_path, "w", encoding="utf-8") as f:
@@ -113,6 +113,9 @@ def run_dbt_run():
     logging.info(f"DBT Run completado en {duration:.2f} segundos")
     logging.info(f"Modelos ejecutados: {total_count} | PASS: {pass_count} | WARN: {warn_count} | ERROR: {error_count}")
 
+#
+# FLUJO COMPLETO
+#
 @flow(name="Daily ETL Flow")
 def daily_flow():
     """Flujo ETL completo con extraccion, transformacion y carga."""
@@ -123,20 +126,18 @@ def daily_flow():
     run_dbt()
     logging.info("Flujo ETL diario completado con exito.")
 
+#
+# FLUJO SOLO DBT
+#
+@flow(name="DBT Only Flow")
+def dbt_only_flow():
+    """Flujo que solo corre DBT."""
+    logging.info("Iniciando flujo para ejecutar solo dbt run...")
+    run_dbt()
+
 if __name__ == "__main__":
-    daily_flow()
+    # Por defecto, ejecuta el flujo completo
+    #daily_flow()
 
-
-# # if __name__ == "__main__":
-# #     daily_flow.deploy(
-# #         name="daily_job",
-# #         work_pool_name="mi_work_pool",
-# #         cron="0 0 * * *",
-# #     )
-
-# # #  Si queremos probar 
-# if __name__ == "__main__":
-#      daily_flow()
-
-
-
+    # Para probar solo dbt, descomenta la siguiente línea:
+    dbt_only_flow()

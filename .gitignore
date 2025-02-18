@@ -1,7 +1,20 @@
-
+# Carpetas generadas por dbt
 target/
 dbt_packages/
+
+# Logs y archivos temporales
 logs/
+dbt.log
+
+# Entornos virtuales y archivos de entorno
 env/
-.env
 venv/
+.env
+
+# Archivo de configuración de dbt (puede contener credenciales)
+profiles.yml
+.user.yml
+# Archivos de caché de Python
+__pycache__/
+*.pyc
+*.pyo

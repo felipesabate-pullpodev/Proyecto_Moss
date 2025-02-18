@@ -30,7 +30,7 @@ ACCESS_TOKEN = os.getenv("BSALE_ACCESS_TOKEN")
 BIGQUERY_PROJECT_ID = os.getenv("BIGQUERY_PROJECT_ID")
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET")
 BIGQUERY_TABLE = os.getenv("BIGQUERY_TABLE")
-BIGQUERY_KEY_PATH = r"C:\Users\Felip\Desktop\PULLPO\Repositorio Demos\ELT&V\Proyecto_Moss\env\moss-448416-4aea07bf8473.json"
+BIGQUERY_KEY_PATH = os.getenv("BIGQUERY_KEY_PATH")
 
 # Tamaño del batch para enviar datos a BigQuery
 BATCH_SIZE = 500  
