@@ -13,6 +13,7 @@ WITH stock AS (
    variant_id,
    variant_code,
    variant_description,
+   office_name AS sucursal,
    SUM(quantity) AS stock_actual
    FROM {{ ref('stg_actual_stock') }}
    group by all
