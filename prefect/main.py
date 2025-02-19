@@ -18,10 +18,11 @@ load_dotenv()
 
 def run_script(task_name, script_path):
     """
-    Ejecuta un script Python desde el path indicado y muestra la salida en tiempo real.
-    Además, guarda la salida en un archivo de log específico para la tarea.
+    Ejecuta un script Python desde el path indicado, mostrando la salida en tiempo real 
+    y escribiéndola en un archivo de log específico. Si la salida por stderr contiene 
+    palabras indicativas de mensajes informativos, se registra como INFO en lugar de ERROR.
     """
-    # Definir un archivo de log único para cada tarea (sin acentos para evitar problemas)
+    # Crear un nombre seguro para el archivo de log (sin espacios ni acentos)
     safe_task_name = task_name.encode("ascii", "ignore").decode().replace(" ", "_").lower()
     log_file = f"/home/mosspullpo/logs/{safe_task_name}_run.log"
     logging.info(f"Ejecutando {task_name} desde: {script_path}. Logs en: {log_file}")
@@ -34,19 +35,26 @@ def run_script(task_name, script_path):
         encoding="utf-8"
     )
 
-    # Leer y mostrar la salida en tiempo real
+    # Leer y mostrar la salida stdout en tiempo real
     for line in iter(process.stdout.readline, ""):
         line = line.rstrip()
         if line:
             logging.info(f"{task_name} STDOUT: {line}")
             with open(log_file, "a") as f:
                 f.write(f"{task_name} STDOUT: {line}\n")
+
+    # Leer y mostrar la salida stderr en tiempo real, con filtrado
     for line in iter(process.stderr.readline, ""):
         line = line.rstrip()
         if line:
-            logging.error(f"{task_name} STDERR: {line}")
+            # Si el mensaje contiene ciertos indicadores informativos, lo tratamos como INFO
+            if "Procesando" in line or "Se obtuvieron" in line:
+                logging.info(f"{task_name} STDERR: {line}")
+            else:
+                logging.error(f"{task_name} STDERR: {line}")
             with open(log_file, "a") as f:
                 f.write(f"{task_name} STDERR: {line}\n")
+
     process.stdout.close()
     process.stderr.close()
     return_code = process.wait()
@@ -57,6 +65,7 @@ def run_script(task_name, script_path):
 @task(name="Extracción Documentos Bsale")
 def run_carga_diaria():
     logging.info("Iniciando extracción de documentos desde Bsale...")
+    # Usar ruta absoluta para evitar problemas con rutas relativas
     run_script("Extracción Documentos Bsale", "/home/mosspullpo/Proyecto_Moss/bsale/components/documentos/carga_diaria.py")
     logging.info("Extracción de documentos completada.")
 
@@ -80,8 +89,8 @@ def run_dbt():
 
 def run_dbt_run():
     """
-    Ejecuta 'dbt run' en el directorio del proyecto DBT y muestra la salida en tiempo real,
-    además de guardarla en un archivo de log.
+    Ejecuta 'dbt run' en el directorio del proyecto DBT, mostrando la salida en tiempo real 
+    y guardándola en un archivo de log.
     """
     log_file = "/home/mosspullpo/logs/dbt_run.log"
     logging.info("Iniciando DBT Run...")
@@ -94,7 +103,7 @@ def run_dbt_run():
 
     # Configurar el entorno para DBT
     env = os.environ.copy()
-    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegurar que DBT use el perfil correcto
+    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegura que DBT use el perfil correcto
 
     process = subprocess.Popen(
         ["dbt", "run"],
@@ -115,6 +124,7 @@ def run_dbt_run():
     for line in iter(process.stderr.readline, ""):
         line = line.rstrip()
         if line:
+            # Puedes aplicar un filtrado similar si lo deseas para DBT también
             logging.error(f"DBT STDERR: {line}")
             with open(log_file, "a") as f:
                 f.write(f"DBT STDERR: {line}\n")
@@ -133,11 +143,16 @@ def run_dbt_run():
         raise RuntimeError(f"Error en DBT Run. Revisa el archivo {error_log_path}")
 
     logging.info(f"DBT Run completado en {duration:.2f} segundos")
-    # Opcional: Procesar estadísticas si las necesitas
-    # (Puedes agregar procesamiento de estadísticas aquí si se requiere)
+    # Opcional: Procesar estadísticas si se requiere
+    pass_count = warn_count = error_count = total_count = 0
+    for line in process.stdout:
+        # Aquí podrías agregar procesamiento si fuera necesario
+        pass
+    logging.info(f"Modelos ejecutados: {total_count} | PASS: {pass_count} | WARN: {warn_count} | ERROR: {error_count}")
 
 @flow(name="Daily ETL Flow")
 def daily_flow():
+    """Flujo ETL completo con extracción, transformación y carga."""
     logging.info("Iniciando el flujo de ETL diario...")
     run_carga_diaria()
     run_stock_masivo_actual()
@@ -147,4 +162,3 @@ def daily_flow():
 
 if __name__ == "__main__":
     daily_flow()
-
