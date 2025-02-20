@@ -16,15 +16,20 @@ logging.basicConfig(
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
+def get_daily_log_file(safe_task_name):
+    """Devuelve el nombre del archivo de log para el día actual."""
+    today = datetime.now().strftime("%Y%m%d")
+    return f"/home/mosspullpo/logs/{safe_task_name}_{today}.log"
+
 def run_script(task_name, script_path):
     """
     Ejecuta un script Python desde el path indicado, mostrando la salida en tiempo real 
-    y escribiéndola en un archivo de log específico. Las líneas de stderr que contienen 
-    "Procesando" o "Se obtuvieron" se registran como INFO.
+    y escribiéndola en un archivo de log específico para el día.
+    Las líneas de stderr que contienen "Procesando" o "Se obtuvieron" se registran como INFO.
     """
     # Crear un nombre seguro para el archivo de log (sin espacios ni acentos)
     safe_task_name = task_name.encode("ascii", "ignore").decode().replace(" ", "_").lower()
-    log_file = f"/home/mosspullpo/logs/{safe_task_name}_run.log"
+    log_file = get_daily_log_file(safe_task_name)
     logging.info(f"Ejecutando {task_name} desde: {script_path}. Logs en: {log_file}")
 
     process = subprocess.Popen(
