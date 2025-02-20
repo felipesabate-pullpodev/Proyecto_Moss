@@ -43,7 +43,7 @@ def obtener_stock_por_codigo(variant_code):
     return None
 
 # Prueba con el variant code "2260AZMAXXL"
-variant_code_prueba = "2216MOST4XL"
+variant_code_prueba = "2249AZMA4XL"
 stock_data = obtener_stock_por_codigo(variant_code_prueba)
 
 

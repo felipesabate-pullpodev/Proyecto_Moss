@@ -24,6 +24,7 @@ def load_to_bigquery_masivo(df):
     """
     Carga el DataFrame `df` en una tabla de BigQuery.
     Ajusta el project, dataset y table_name según tu configuración.
+    Si la tabla no existe, se crea automáticamente.
     """
     try:
         # Obtener variables de entorno
@@ -32,7 +33,7 @@ def load_to_bigquery_masivo(df):
         dataset_id = os.getenv("BIGQUERY_DATASET")
         table_name = os.getenv("BIGQUERY_TABLE")
 
-        # Depuración: Verificar si las variables están cargadas
+        # Verificar que las variables están cargadas
         if not key_path:
             logger.error("BIGQUERY_KEY_PATH no está definido en las variables de entorno.")
         if not project_id:
@@ -48,22 +49,16 @@ def load_to_bigquery_masivo(df):
 
         # Crear el cliente de BigQuery usando el archivo de credenciales
         client = bigquery.Client.from_service_account_json(key_path, project=project_id)
-
-        # Define el ID completo de tu tabla: project.dataset.table
         table_id = f"{project_id}.{dataset_id}.{table_name}"
 
-        # Configura el modo de carga: WRITE_APPEND para anexar datos
+        # Configurar el job de carga: WRITE_APPEND y crear la tabla si no existe
         job_config = bigquery.LoadJobConfig(
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
-            autodetect=True  # Infiriendo el esquema automáticamente
+            autodetect=True,
+            create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED
         )
 
-        # Lanza el job de carga
-        load_job = client.load_table_from_dataframe(
-            df,
-            table_id,
-            job_config=job_config
-        )
+        load_job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
         load_job.result()  # Espera a que termine la carga
 
         logger.info(f"Se cargaron {len(df)} registros a BigQuery en la tabla {table_id}.")
@@ -149,26 +144,21 @@ def fetch_all_pages(url, headers, session):
 
 def fetch_all_detail_pages(url, headers, session):
     # Similar a fetch_all_pages, pero específico para detalles
-    # asumiendo que la respuesta es igual: {'items': [...], 'next': ...}
     return fetch_all_pages(url, headers, session)
 
 def expand_document_details(document, headers, session):
-    # Este método se asegura de que document['details'] tenga todos los items
+    """
+    Asegura que el campo 'details' contenga todos los items, 
+    expandiendo la paginación si es necesario.
+    """
     details_field = document.get("details", [])
-    # Verificar si details es una lista normal o viene con estructura paginada
-    # Dependiendo de cómo Bsale retorne los detalles, puede que ya venga una lista
-    # o un dict con 'items' y 'next'. Aquí asumiremos el segundo caso:
     if isinstance(details_field, dict):
         all_details = details_field.get('items', [])
         next_url = details_field.get('next')
         if next_url:
-            # obtener las siguientes páginas de detalles
             more_details = fetch_all_pages(next_url, headers, session)
             all_details.extend(more_details)
-        # Reemplazar el campo details por la lista completa
         document['details'] = all_details
-    # Si ya es una lista, no hacemos nada.
-
     return document
 
 def extract_data_with_expand(start_interval=0):
@@ -192,15 +182,17 @@ def extract_data_with_expand(start_interval=0):
     buffer = []
     batch_size = 20000
     start_time = time.time()
+    failed_intervals = []  # Para almacenar intervalos que fallaron
 
     with requests.Session() as session:
         for i in range(start_interval, len(intervals) - 1):
             interval_counter += 1
             firstid = intervals[i]['id']
-            lastid = intervals[i + 1]['id'] - 1
+            lastid = intervals[i + 1]['id'] - 1  # Verifica si este cálculo es correcto según la documentación
 
             logger.info(f"Procesando intervalo {interval_counter}/{total_intervals}: IDs del {firstid} al {lastid}.")
 
+            success = False
             for attempt in range(5):
                 try:
                     url = (
@@ -208,43 +200,52 @@ def extract_data_with_expand(start_interval=0):
                         f'?firstid={firstid}&lastid={lastid}&order=none&limit=500'
                         f'&expand=document_type,client,office,user,details,references,document_taxes,sellers,payments'
                     )
-                    
-                    # Descargar todos los documentos de este rango
-                    documents = fetch_all_pages(url, headers_documents, session)
 
+                    # Descargar todos los documentos del intervalo
+                    documents = fetch_all_pages(url, headers_documents, session)
                     logger.info(f"Procesando {len(documents)} documentos del intervalo.")
 
-                    # Identificar documentos que tengan detalles paginados
-                    docs_with_incomplete_details = []
-                    for doc in documents:
+                    # Verificar que se hayan obtenido todos los IDs esperados en el intervalo
+                    fetched_ids = {doc.get("id") for doc in documents}
+                    expected_ids = set(range(firstid, lastid + 1))
+                    missing_ids = expected_ids - fetched_ids
+                    if missing_ids:
+                        logger.warning(f"Intervalo {firstid}-{lastid}: faltan documentos con IDs: {sorted(missing_ids)}. Se intentará obtenerlos individualmente.")
+                        for missing_id in missing_ids:
+                            try:
+                                url_single = f'https://api.bsale.cl/v1/documents/{missing_id}.json'
+                                response_single = session.get(url_single, headers=headers_documents, timeout=30)
+                                response_single.raise_for_status()
+                                single_doc = response_single.json()
+                                documents.append(single_doc)
+                            except Exception as e:
+                                logger.error(f"Error al obtener el documento con id {missing_id} individualmente: {e}")
+
+                    # Actualizar directamente en la lista aquellos documentos que tengan detalles paginados
+                    for idx, doc in enumerate(documents):
                         details = doc.get("details")
                         if isinstance(details, dict) and details.get('next'):
-                            docs_with_incomplete_details.append(doc)
-
-                    # Expandir detalles de manera secuencial (podrías optimizar con ThreadPool si gustas)
-                    for doc in docs_with_incomplete_details:
-                        doc = expand_document_details(doc, headers_documents, session)
+                            documents[idx] = expand_document_details(doc, headers_documents, session)
 
                     # Procesar cada documento y agregar al buffer
                     for document in documents:
                         processed_document = process_document(document)
                         if processed_document:
                             buffer.append(processed_document)
-                            # Si llegamos al batch_size, cargamos
                             if len(buffer) >= batch_size:
                                 df = pd.DataFrame(buffer)
                                 load_to_bigquery_masivo(df)
                                 logger.info(f"Cargados {len(df)} registros a BigQuery.")
                                 buffer = []
 
-                    # Guardar el lastid en un archivo local (opcional)
+                    # Guardar el último ID procesado (opcional)
                     with open('last_id.txt', 'w') as f:
                         f.write(str(lastid))
 
-                    break  # Salimos del loop de reintentos si todo salió bien
+                    success = True
+                    break  # Salir del ciclo de reintentos si todo salió bien
 
                 except requests.exceptions.HTTPError as e:
-                    # Manejo especial si nos encontramos con un error 429 (rate limit)
                     if hasattr(e, 'response') and e.response and e.response.status_code == 429:
                         retry_after = int(e.response.headers.get('Retry-After', 60))
                         retry_delay = retry_after * (2 ** attempt)
@@ -257,11 +258,12 @@ def extract_data_with_expand(start_interval=0):
                 except requests.exceptions.RequestException as e:
                     logger.error(f"Error al obtener documentos del intervalo {firstid}-{lastid}: {e}")
                     break
-            else:
+
+            if not success:
                 logger.error(f"No se pudo obtener documentos del intervalo {firstid}-{lastid} después de 5 intentos.")
+                failed_intervals.append((firstid, lastid))
 
             elapsed_time = time.time() - start_time
-            intervals_left = total_intervals - interval_counter
             if interval_counter - start_interval > 0:
                 estimated_total_time = (elapsed_time / (interval_counter - start_interval)) * (total_intervals - start_interval)
                 estimated_time_left = estimated_total_time - elapsed_time
@@ -270,7 +272,7 @@ def extract_data_with_expand(start_interval=0):
             logger.info(f"Tiempo transcurrido: {elapsed_time:.2f}s, tiempo estimado restante: {estimated_time_left:.2f}s.")
             logger.info(f"Documentos en el buffer después del intervalo {interval_counter}: {len(buffer)}")
 
-        # Al terminar todos los intervalos, si quedan documentos en el buffer, se cargan
+        # Al finalizar todos los intervalos, si quedan documentos en el buffer, se cargan
         if buffer:
             df = pd.DataFrame(buffer)
             load_to_bigquery_masivo(df)
@@ -279,6 +281,8 @@ def extract_data_with_expand(start_interval=0):
 
     total_elapsed_time = time.time() - start_time
     logger.info(f"Proceso completado en {total_elapsed_time:.2f} segundos.")
+    if failed_intervals:
+        logger.error(f"Los siguientes intervalos fallaron: {failed_intervals}")
 
 if __name__ == "__main__":
     # Comenzar desde el intervalo 0
