@@ -19,8 +19,8 @@ load_dotenv()
 def run_script(task_name, script_path):
     """
     Ejecuta un script Python desde el path indicado, mostrando la salida en tiempo real 
-    y escribiéndola en un archivo de log específico. Si la salida por stderr contiene 
-    palabras indicativas de mensajes informativos, se registra como INFO en lugar de ERROR.
+    y escribiéndola en un archivo de log específico. Las líneas de stderr que contienen 
+    "Procesando" o "Se obtuvieron" se registran como INFO.
     """
     # Crear un nombre seguro para el archivo de log (sin espacios ni acentos)
     safe_task_name = task_name.encode("ascii", "ignore").decode().replace(" ", "_").lower()
@@ -35,26 +35,23 @@ def run_script(task_name, script_path):
         encoding="utf-8"
     )
 
-    # Leer y mostrar la salida stdout en tiempo real
+    # Leer y mostrar la salida de stdout en tiempo real
     for line in iter(process.stdout.readline, ""):
         line = line.rstrip()
         if line:
             logging.info(f"{task_name} STDOUT: {line}")
             with open(log_file, "a") as f:
                 f.write(f"{task_name} STDOUT: {line}\n")
-
-    # Leer y mostrar la salida stderr en tiempo real, con filtrado
+    # Leer y mostrar la salida de stderr en tiempo real, con filtrado
     for line in iter(process.stderr.readline, ""):
         line = line.rstrip()
         if line:
-            # Si el mensaje contiene ciertos indicadores informativos, lo tratamos como INFO
             if "Procesando" in line or "Se obtuvieron" in line:
                 logging.info(f"{task_name} STDERR: {line}")
             else:
                 logging.error(f"{task_name} STDERR: {line}")
             with open(log_file, "a") as f:
                 f.write(f"{task_name} STDERR: {line}\n")
-
     process.stdout.close()
     process.stderr.close()
     return_code = process.wait()
@@ -103,7 +100,7 @@ def run_dbt_run():
 
     # Configurar el entorno para DBT
     env = os.environ.copy()
-    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegura que DBT use el perfil correcto
+    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegurar que DBT use el perfil correcto
 
     process = subprocess.Popen(
         ["dbt", "run"],
@@ -124,7 +121,6 @@ def run_dbt_run():
     for line in iter(process.stderr.readline, ""):
         line = line.rstrip()
         if line:
-            # Puedes aplicar un filtrado similar si lo deseas para DBT también
             logging.error(f"DBT STDERR: {line}")
             with open(log_file, "a") as f:
                 f.write(f"DBT STDERR: {line}\n")
@@ -143,12 +139,6 @@ def run_dbt_run():
         raise RuntimeError(f"Error en DBT Run. Revisa el archivo {error_log_path}")
 
     logging.info(f"DBT Run completado en {duration:.2f} segundos")
-    # Opcional: Procesar estadísticas si se requiere
-    pass_count = warn_count = error_count = total_count = 0
-    for line in process.stdout:
-        # Aquí podrías agregar procesamiento si fuera necesario
-        pass
-    logging.info(f"Modelos ejecutados: {total_count} | PASS: {pass_count} | WARN: {warn_count} | ERROR: {error_count}")
 
 @flow(name="Daily ETL Flow")
 def daily_flow():
