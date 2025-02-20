@@ -35,7 +35,6 @@ documents AS (
     SAFE_CAST(JSON_EXTRACT_SCALAR(user,          '$.id') AS INT64) AS user_id
 
   FROM `moss-448416.dataset.bsale_documents`
-  --- NO APARECE ESTA ORDEN !!!!
 
 ),
 

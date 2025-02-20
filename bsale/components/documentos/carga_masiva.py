@@ -213,10 +213,18 @@ def extract_data_with_expand(start_interval=0):
                         logger.warning(f"Intervalo {firstid}-{lastid}: faltan documentos con IDs: {sorted(missing_ids)}. Se intentará obtenerlos individualmente.")
                         for missing_id in missing_ids:
                             try:
-                                url_single = f'https://api.bsale.cl/v1/documents/{missing_id}.json'
+                                url_single = (
+                                    f'https://api.bsale.cl/v1/documents/{missing_id}.json'
+                                    f'?expand=document_type,client,office,user,details,references,document_taxes,sellers,payments'
+                                )
                                 response_single = session.get(url_single, headers=headers_documents, timeout=30)
                                 response_single.raise_for_status()
                                 single_doc = response_single.json()
+
+                                # Asegurar que si tiene detalles paginados, los expandimos
+                                if isinstance(single_doc.get("details"), dict) and single_doc["details"].get("next"):
+                                    single_doc = expand_document_details(single_doc, headers_documents, session)
+
                                 documents.append(single_doc)
                             except Exception as e:
                                 logger.error(f"Error al obtener el documento con id {missing_id} individualmente: {e}")
