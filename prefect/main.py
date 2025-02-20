@@ -16,20 +16,26 @@ logging.basicConfig(
 # Cargar variables de entorno desde el archivo .env
 load_dotenv()
 
-def get_daily_log_file(safe_task_name):
+def get_daily_log_file():
     """Devuelve el nombre del archivo de log para el día actual."""
     today = datetime.now().strftime("%Y%m%d")
-    return f"/home/mosspullpo/logs/{safe_task_name}_{today}.log"
+    return f"/home/mosspullpo/logs/daily_{today}.log"
+
+def log_flow_run_header():
+    """Escribe un encabezado en el log diario para cada ejecución del flujo."""
+    log_file = get_daily_log_file()
+    header = f"\n=== Daily Flow Run - {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+    with open(log_file, "a") as f:
+        f.write(header)
+    logging.info(header.strip())
 
 def run_script(task_name, script_path):
     """
     Ejecuta un script Python desde el path indicado, mostrando la salida en tiempo real 
-    y escribiéndola en un archivo de log específico para el día.
+    y escribiéndola en un único archivo de log diario.
     Las líneas de stderr que contienen "Procesando" o "Se obtuvieron" se registran como INFO.
     """
-    # Crear un nombre seguro para el archivo de log (sin espacios ni acentos)
-    safe_task_name = task_name.encode("ascii", "ignore").decode().replace(" ", "_").lower()
-    log_file = get_daily_log_file(safe_task_name)
+    log_file = get_daily_log_file()
     logging.info(f"Ejecutando {task_name} desde: {script_path}. Logs en: {log_file}")
 
     process = subprocess.Popen(
@@ -67,7 +73,6 @@ def run_script(task_name, script_path):
 @task(name="Extracción Documentos Bsale")
 def run_carga_diaria():
     logging.info("Iniciando extracción de documentos desde Bsale...")
-    # Usar ruta absoluta para evitar problemas con rutas relativas
     run_script("Extracción Documentos Bsale", "/home/mosspullpo/Proyecto_Moss/bsale/components/documentos/carga_diaria.py")
     logging.info("Extracción de documentos completada.")
 
@@ -92,9 +97,9 @@ def run_dbt():
 def run_dbt_run():
     """
     Ejecuta 'dbt run' en el directorio del proyecto DBT, mostrando la salida en tiempo real 
-    y guardándola en un archivo de log.
+    y guardándola en el log diario.
     """
-    log_file = "/home/mosspullpo/logs/dbt_run.log"
+    log_file = get_daily_log_file()
     logging.info("Iniciando DBT Run...")
     start_time = datetime.now()
 
@@ -105,7 +110,7 @@ def run_dbt_run():
 
     # Configurar el entorno para DBT
     env = os.environ.copy()
-    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegurar que DBT use el perfil correcto
+    env["DBT_PROFILES_DIR"] = dbt_project_dir
 
     process = subprocess.Popen(
         ["dbt", "run"],
@@ -147,7 +152,7 @@ def run_dbt_run():
 
 @flow(name="Daily ETL Flow")
 def daily_flow():
-    """Flujo ETL completo con extracción, transformación y carga."""
+    log_flow_run_header()
     logging.info("Iniciando el flujo de ETL diario...")
     run_carga_diaria()
     run_stock_masivo_actual()
