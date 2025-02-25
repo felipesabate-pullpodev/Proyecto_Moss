@@ -95,60 +95,47 @@ def run_dbt():
     logging.info("DBT Run finalizado con éxito.")
 
 def run_dbt_run():
-    """
-    Ejecuta 'dbt run' en el directorio del proyecto DBT, mostrando la salida en tiempo real 
-    y guardándola en el log diario.
-    """
-    log_file = get_daily_log_file()
+    """Ejecuta 'dbt run' asegurando el entorno correcto y capturando la salida en tiempo real."""
+    log_file = "/home/mosspullpo/logs/daily_{}.log".format(datetime.now().strftime("%Y%m%d"))
     logging.info("Iniciando DBT Run...")
-    start_time = datetime.now()
 
-    # Determinar el directorio del proyecto DBT
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    dbt_project_dir = os.path.abspath(os.path.join(script_dir, "..", "dbt_project"))
-    logging.info(f"Ejecutando DBT en el directorio: {dbt_project_dir}")
+    # Directorio donde está el proyecto dbt
+    dbt_project_dir = "/home/mosspullpo/Proyecto_Moss/dbt_project"
 
-    # Configurar el entorno para DBT
+    # Definir variables de entorno
     env = os.environ.copy()
-    env["DBT_PROFILES_DIR"] = dbt_project_dir
+    env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegurar que usa el perfil correcto
 
+    # 🔥 **Asegurar que GOOGLE_APPLICATION_CREDENTIALS está definido**
+    if "GOOGLE_APPLICATION_CREDENTIALS" not in env:
+        env["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/mosspullpo/Proyecto_Moss/env/moss-dbt.json"
+
+    logging.info(f"DBT_PROFILES_DIR = {env['DBT_PROFILES_DIR']}")
+    logging.info(f"GOOGLE_APPLICATION_CREDENTIALS = {env['GOOGLE_APPLICATION_CREDENTIALS']}")
+
+    # Ejecutar DBT y capturar salida en tiempo real
     process = subprocess.Popen(
         ["dbt", "run"],
         cwd=dbt_project_dir,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        encoding="utf-8"
+        text=True
     )
 
-    for line in iter(process.stdout.readline, ""):
-        line = line.rstrip()
-        if line:
-            logging.info(f"DBT STDOUT: {line}")
-            with open(log_file, "a") as f:
-                f.write(f"DBT STDOUT: {line}\n")
-    for line in iter(process.stderr.readline, ""):
-        line = line.rstrip()
-        if line:
-            logging.error(f"DBT STDERR: {line}")
-            with open(log_file, "a") as f:
-                f.write(f"DBT STDERR: {line}\n")
-    process.stdout.close()
-    process.stderr.close()
-    return_code = process.wait()
+    # Capturar y mostrar salida en tiempo real
+    for line in process.stdout:
+        print(line.strip())  # 🔹 **Usar print() en lugar de logging.info()**
+    for line in process.stderr:
+        print(f"ERROR: {line.strip()}")  # 🔹 **Usar print() en lugar de logging.error()**
 
-    end_time = datetime.now()
-    duration = (end_time - start_time).total_seconds()
+    process.wait()
 
-    if return_code != 0:
-        error_log_path = os.path.join(dbt_project_dir, "dbt_error_log.txt")
-        with open(error_log_path, "w", encoding="utf-8") as f:
-            f.write("Error en DBT run\n")
-        logging.error(f"Error en DBT Run. Ver detalles en {error_log_path}")
-        raise RuntimeError(f"Error en DBT Run. Revisa el archivo {error_log_path}")
+    if process.returncode != 0:
+        logging.error("DBT Run falló. Revisa la salida anterior para más detalles.")
+        raise RuntimeError("Error en DBT Run.")
 
-    logging.info(f"DBT Run completado en {duration:.2f} segundos")
+    logging.info("DBT Run ejecutado correctamente.")
 
 @flow(name="Daily ETL Flow")
 def daily_flow():
