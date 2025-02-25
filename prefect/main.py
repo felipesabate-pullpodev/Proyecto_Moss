@@ -5,6 +5,7 @@ import logging
 from datetime import datetime
 from dotenv import load_dotenv
 from prefect import flow, task
+import shutil  # Import necesario para verificar rutas de ejecutables
 
 # Configuración global del logger para que imprima en la CLI
 logging.basicConfig(
@@ -99,14 +100,30 @@ def run_dbt_run():
     log_file = "/home/mosspullpo/logs/daily_{}.log".format(datetime.now().strftime("%Y%m%d"))
     logging.info("Iniciando DBT Run...")
 
+    # 🔥 **Verificar qué Python y dbt está usando Prefect**
+    logging.info(f"Python ejecutándose desde: {sys.executable}")
+    logging.info(f"DBT encontrado en: {shutil.which('dbt')}")
+    logging.info(f"Entorno virtual activo: {os.environ.get('VIRTUAL_ENV', 'Ninguno')}")
+
     # Directorio donde está el proyecto dbt
     dbt_project_dir = "/home/mosspullpo/Proyecto_Moss/dbt_project"
+
+    # Ruta absoluta del ejecutable de dbt dentro del entorno virtual
+    dbt_executable = "/home/mosspullpo/venv/bin/dbt"
+
+    # Verificar si dbt existe en la ruta especificada
+    if not os.path.exists(dbt_executable):
+        logging.error(f"No se encontró dbt en {dbt_executable}.")
+        raise RuntimeError(f"No se encontró dbt en {dbt_executable}. Revisa la instalación.")
+
+    logging.info(f"Ejecutando DBT desde: {dbt_executable}")
+    logging.info(f"Directorio del proyecto DBT: {dbt_project_dir}")
 
     # Definir variables de entorno
     env = os.environ.copy()
     env["DBT_PROFILES_DIR"] = dbt_project_dir  # Asegurar que usa el perfil correcto
 
-    # 🔥 **Asegurar que GOOGLE_APPLICATION_CREDENTIALS está definido**
+    # Asegurar que GOOGLE_APPLICATION_CREDENTIALS está definido
     if "GOOGLE_APPLICATION_CREDENTIALS" not in env:
         env["GOOGLE_APPLICATION_CREDENTIALS"] = "/home/mosspullpo/Proyecto_Moss/env/moss-dbt.json"
 
@@ -115,7 +132,7 @@ def run_dbt_run():
 
     # Ejecutar DBT y capturar salida en tiempo real
     process = subprocess.Popen(
-        ["dbt", "run"],
+        [dbt_executable, "run"],  # 🔹 **Usar la ruta completa de dbt**
         cwd=dbt_project_dir,
         env=env,
         stdout=subprocess.PIPE,
@@ -125,9 +142,9 @@ def run_dbt_run():
 
     # Capturar y mostrar salida en tiempo real
     for line in process.stdout:
-        print(line.strip())  # 🔹 **Usar print() en lugar de logging.info()**
+        print(line.strip())  
     for line in process.stderr:
-        print(f"ERROR: {line.strip()}")  # 🔹 **Usar print() en lugar de logging.error()**
+        print(f"ERROR: {line.strip()}")
 
     process.wait()
 
@@ -136,6 +153,7 @@ def run_dbt_run():
         raise RuntimeError("Error en DBT Run.")
 
     logging.info("DBT Run ejecutado correctamente.")
+
 
 @flow(name="Daily ETL Flow")
 def daily_flow():
@@ -149,3 +167,6 @@ def daily_flow():
 
 if __name__ == "__main__":
     daily_flow()
+
+
+
