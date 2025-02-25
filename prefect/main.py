@@ -156,7 +156,7 @@ def daily_flow():
     logging.info("Iniciando el flujo de ETL diario...")
     run_carga_diaria()
     run_stock_masivo_actual()
-    run_carga_diaria_meta()
+    # run_carga_diaria_meta()
     run_dbt()
     logging.info("Flujo ETL diario completado con éxito.")
 
