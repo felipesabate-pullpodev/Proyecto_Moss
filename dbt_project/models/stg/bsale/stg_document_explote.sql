@@ -72,4 +72,4 @@ d.variant_id
 
 FROM documents d
 LEFT JOIN document_type dt 
-    ON document_type_id = dt.document_id 
+    ON document_type_id = dt.document_id
