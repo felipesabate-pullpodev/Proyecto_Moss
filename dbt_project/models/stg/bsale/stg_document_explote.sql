@@ -26,13 +26,8 @@ maestra_productos AS (
 SELECT *
 FROM {{ ref('raw_master_product') }}
 
-),
-
-office AS (
-
-    SELECT *
-    FROM {{ ref('raw_offices') }}
 )
+
 
 SELECT 
 d.doc_id,
@@ -54,6 +49,14 @@ d.detail_totalAmount AS detail_total_amount,
 d.detail_netDiscount AS detail_net_discount,
 d.detail_totalDiscount AS detail_total_discount, 
 d.office_id,
+CASE 
+        WHEN office_id = 1 THEN 'PROVIDENCIA'
+        WHEN office_id = 2 THEN 'BUCAREST'
+        WHEN office_id = 3 THEN 'MONTEVIDEO'
+        WHEN office_id = 4 THEN 'APUMANQUE'
+        WHEN office_id = 5 THEN 'HUÉRFANOS'
+        ELSE 'OTRA OFICINA'  -- En caso de que haya más valores no contemplados
+    END office,
 d.variant_description,
 CASE
   WHEN d.variant_description = 'S' THEN 1
@@ -65,10 +68,8 @@ CASE
   WHEN d.variant_description = '4XL' THEN 7
 END AS orden_tallas,
 d.variant_code,
-d.variant_id,
-o.name AS office
+d.variant_id
+
 FROM documents d
 LEFT JOIN document_type dt 
     ON document_type_id = dt.document_id 
-LEFT JOIN office o
-    ON d.office_id = o.id

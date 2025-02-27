@@ -340,7 +340,7 @@ def extract_insights_meta(days_back=2):
 if __name__ == "__main__":
     start_time = datetime.now()
 
-    extract_insights_meta(days_back=2)
+    extract_insights_meta(days_back=1)
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
