@@ -62,14 +62,13 @@ def fetch_ad_creative_details(ad_creative_id):
     return creative_data
 
 # -------------------------------------------------------------------
-# FUNCIÓN PARA OBTENER EL CONTENIDO DEL POST (MENSAJE / TEXTO DEL ANUNCIO + VIDEO)
+# FUNCIÓN PARA OBTENER EL CONTENIDO DEL POST (MENSAJE / TEXTO DEL ANUNCIO)
 # -------------------------------------------------------------------
 def fetch_post_details(post_id):
     """
     Obtiene el contenido del post asociado a un `object_story_id` (texto del anuncio).
-    También verifica si el post contiene un video.
     """
-    url = f"https://graph.facebook.com/v16.0/{post_id}?fields=message,link,created_time,attachments,permalink_url&access_token={ACCESS_TOKEN}"
+    url = f"https://graph.facebook.com/v16.0/{post_id}?fields=message,link,created_time&access_token={ACCESS_TOKEN}"
     
     try:
         response = requests.get(url, timeout=60)
@@ -77,32 +76,17 @@ def fetch_post_details(post_id):
         
         if "error" in data:
             logger.error(f"Error obteniendo detalles del post {post_id}: {data['error']}")
-            return {"body": None, "is_video": False, "video_id": None, "post_link": None}  # Devolver vacío si hay error
+            return {"body": None}  # Devolver vacío si hay error
         
-        # Obtener mensaje, video y enlace del post
-        body_text = data.get("message")
-        post_link = data.get("permalink_url")
-        is_video = False
-        video_id = None
-
-        # Verificar si hay attachments (pueden incluir imágenes o videos)
-        attachments = data.get("attachments", {}).get("data", [])
-        for attachment in attachments:
-            if attachment.get("type") == "video_autoplay":
-                is_video = True
-                video_id = attachment.get("target", {}).get("id")
-
         return {
-            "body": body_text,
-            "post_link": post_link,
-            "is_video": is_video,
-            "video_id": video_id,
+            "body": data.get("message"),
+            "post_link": data.get("link"),
             "post_created_time": data.get("created_time")
         }
     
     except requests.exceptions.RequestException as e:
         logger.error(f"Error de conexión al obtener el post: {e}")
-        return {"body": None, "is_video": False, "video_id": None, "post_link": None}
+        return {"body": None}
 
 # -------------------------------------------------------------------
 # EJECUCIÓN

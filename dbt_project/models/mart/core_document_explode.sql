@@ -39,10 +39,11 @@ WITH documents AS (
 ,
 fbads AS (
     SELECT 
-        campaign_date as date_fb,
-        SUM(spend) AS costo_clp_fbads 
-    FROM {{ ref('stg_meta_ads') }}
-    GROUP BY campaign_date
+         CAST(date_start AS DATE) AS date_fb,
+        SUM(CAST(spend AS FLOAT64)) AS costo_clp_fbads 
+    FROM {{ ref('mart_meta_ads') }}
+    GROUP BY date_start
+    ORDER BY date_start DESC
 )
 ,
 agg AS (

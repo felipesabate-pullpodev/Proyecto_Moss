@@ -18,3 +18,5 @@ profiles.yml
 __pycache__/
 *.pyc
 *.pyo
+
+shopify_orders.json

@@ -29,7 +29,7 @@ AD_ACCOUNT_ID = os.getenv("FB_AD_ACCOUNT_ID")
 ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN")       
 BIGQUERY_PROJECT_ID = os.getenv("BIGQUERY_PROJECT_ID")
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET")
-BIGQUERY_TABLE = 'meta_insights'
+BIGQUERY_TABLE = 'test_meta'
 BIGQUERY_KEY_PATH = os.getenv("BIGQUERY_KEY_PATH")
 
 # Niveles de batch
@@ -80,6 +80,7 @@ def load_to_bigquery(df):
         job_config = bigquery.LoadJobConfig(
             write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
             autodetect=True
+            # create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED,
         )
 
         df.drop_duplicates(subset=["id"], inplace=True)
@@ -157,7 +158,7 @@ def fetch_all_ads_status():
 # -----------------------------------------------------------------------------
 def fetch_all_insights(base_url):
     """
-    Llama a la API con paginación, maneja timeouts, errores de rate limit y reintentos.
+    Llama a la API con paginación, maneja timeouts e imprime logs.
     Retorna una lista con todos los 'data' combinados.
     """
     all_data = []
@@ -169,17 +170,9 @@ def fetch_all_insights(base_url):
             response = session.get(url, timeout=60)
             data = response.json()
 
-            # Si se detecta un error, verificamos si es por límite de llamadas
             if "error" in data:
-                error_data = data["error"]
-                # Si el error es de límite de llamadas (rate limit), pausamos
-                if error_data.get("code") == 80000:
-                    logger.warning("Rate limit alcanzado. Pausando la ejecución por 300 segundos...")
-                    time.sleep(300)  # Pausa de 5 minutos
-                    continue  # Reintentar la misma URL después de la pausa
-                else:
-                    logger.error(f"Ocurrió un error en la API de Meta: {error_data}")
-                    break
+                logger.error(f" Ocurrió un error en la API de Meta: {data['error']}")
+                break
 
             insights = data.get("data", [])
             all_data.extend(insights)
@@ -217,9 +210,10 @@ def process_insight(insight, ads_status_map):
     try:
         ad_id = insight.get("ad_id", "unknown")
         date_start = insight.get("date_start", "unknown")
+        age = insight.get("age", "unknown")
+        gender = insight.get("gender", "unknown")
 
-        # Generar un ID único sin age y gender
-        unique_id = f"{ad_id}_{date_start}"
+        unique_id = f"{ad_id}_{date_start}_{age}_{gender}"
 
         # Obtener status y effective_status del anuncio
         ad_status_info = ads_status_map.get(ad_id, {})
@@ -268,6 +262,8 @@ def process_insight(insight, ads_status_map):
             "clicks": insight.get("clicks"),
             "ctr": insight.get("ctr"),
             "spend": insight.get("spend"),
+            "age": age,
+            "gender": gender,
             "date_start": date_start,
             "date_stop": insight.get("date_stop", "unknown"),
             "actions": actions_json,            # Guarda la lista original como JSON
@@ -285,7 +281,7 @@ def process_insight(insight, ads_status_map):
 # -----------------------------------------------------------------------------
 # 6) Función principal de extracción + carga (con batch interno y global)
 # -----------------------------------------------------------------------------
-def extract_insights_meta(days_back=3):
+def extract_insights_meta(days_back=1):
     """
     Obtiene Insights de los últimos 'days_back' días a nivel de anuncio,
     usando 2 niveles de batch:
@@ -305,12 +301,13 @@ def extract_insights_meta(days_back=3):
     # 1) Info de status de anuncios
     ads_status_map = fetch_all_ads_status()
 
-    # 2) URL base (SIN breakdowns de age y gender)
+    # 2) URL base (incluimos action_values para obtener el valor monetario también)
     base_url = (
         f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/insights"
         f"?level=ad"
         f"&fields=ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,"
         f"impressions,clicks,ctr,spend,actions,action_values"
+        f"&breakdowns=age,gender"
         f"&action_breakdowns=action_type"
         f"&time_increment=1"
         f"&time_range={{'since':'{since_str}','until':'{until_str}'}}"
@@ -369,7 +366,7 @@ def extract_insights_meta(days_back=3):
 if __name__ == "__main__":
     start_time = datetime.now()
 
-    extract_insights_meta(days_back=3)
+    extract_insights_meta(days_back=1)
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
