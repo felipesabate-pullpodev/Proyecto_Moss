@@ -54,6 +54,7 @@ def run_script(task_name, script_path):
             logging.info(f"{task_name} STDOUT: {line}")
             with open(log_file, "a") as f:
                 f.write(f"{task_name} STDOUT: {line}\n")
+
     # Leer y mostrar la salida de stderr en tiempo real, con filtrado
     for line in iter(process.stderr.readline, ""):
         line = line.rstrip()
@@ -64,6 +65,7 @@ def run_script(task_name, script_path):
                 logging.error(f"{task_name} STDERR: {line}")
             with open(log_file, "a") as f:
                 f.write(f"{task_name} STDERR: {line}\n")
+
     process.stdout.close()
     process.stderr.close()
     return_code = process.wait()
@@ -71,11 +73,13 @@ def run_script(task_name, script_path):
         raise RuntimeError(f"Error en {task_name}.")
     logging.info(f"{task_name} ejecutado correctamente.")
 
+
 @task(name="Extracción Documentos Bsale")
 def run_carga_diaria():
     logging.info("Iniciando extracción de documentos desde Bsale...")
     run_script("Extracción Documentos Bsale", "/home/mosspullpo/Proyecto_Moss/bsale/components/documentos/carga_diaria.py")
     logging.info("Extracción de documentos completada.")
+
 
 @task(name="Extracción Stock Bsale")
 def run_stock_masivo_actual():
@@ -83,17 +87,22 @@ def run_stock_masivo_actual():
     run_script("Extracción Stock Bsale", "/home/mosspullpo/Proyecto_Moss/bsale/components/stock/stock_masivo_actual.py")
     logging.info("Extracción de stock completada.")
 
+
 @task(name="Extracción Meta")
 def run_carga_diaria_meta():
     logging.info("Iniciando extracción de datos desde Meta...")
-    run_script("Extracción Meta", "/home/mosspullpo/Proyecto_Moss/meta/carga_diaria_meta.py")
+    meta_script_path = "/home/mosspullpo/Proyecto_Moss/meta/carga_diaria_meta.py"
+    run_script("Extracción Meta", meta_script_path)
     logging.info("Extracción de datos de Meta completada.")
+
+
 
 @task(name="DBT Run")
 def run_dbt():
     logging.info("Iniciando transformación de datos con DBT...")
     run_dbt_run()
     logging.info("DBT Run finalizado con éxito.")
+
 
 def run_dbt_run():
     """Ejecuta 'dbt run' asegurando el entorno correcto y capturando la salida en tiempo real."""
@@ -142,7 +151,7 @@ def run_dbt_run():
 
     # Capturar y mostrar salida en tiempo real
     for line in process.stdout:
-        print(line.strip())  
+        print(line.strip())
     for line in process.stderr:
         print(f"ERROR: {line.strip()}")
 
@@ -157,16 +166,24 @@ def run_dbt_run():
 
 @flow(name="Daily ETL Flow")
 def daily_flow():
+    # Encabezado en el log
     log_flow_run_header()
     logging.info("Iniciando el flujo de ETL diario...")
+
+    # 1) Bsale - Documentos
     run_carga_diaria()
+
+    # 2) Bsale - Stock
     run_stock_masivo_actual()
-    # run_carga_diaria_meta()
+
+    # 3) Meta
+    run_carga_diaria_meta()  # <--- Descomenta esta línea para incluir la extracción de Meta
+
+    # 4) DBT
     run_dbt()
+
     logging.info("Flujo ETL diario completado con éxito.")
+
 
 if __name__ == "__main__":
     daily_flow()
-
-
-
