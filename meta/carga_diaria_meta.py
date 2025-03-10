@@ -153,6 +153,126 @@ def fetch_all_ads_status():
     return ads_status_map
 
 # -----------------------------------------------------------------------------
+# 3.1) Función para obtener información de presupuesto de los ad sets (ABO)
+# -----------------------------------------------------------------------------
+def fetch_adset_budgets():
+    """
+    Obtiene la información de presupuesto de los conjuntos de anuncios (ad sets).
+    Retorna un diccionario con la forma:
+    {
+       'ADSET_ID_1': {
+           'name': 'Nombre del conjunto',
+           'daily_budget': 'valor',
+           'lifetime_budget': 'valor',
+           'budget_remaining': 'valor',
+           'campaign_id': '...',
+       },
+       ...
+    }
+    """
+    adset_budgets = {}
+    session = requests.Session()
+    url = (
+        f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/adsets"
+        f"?fields=id,name,daily_budget,lifetime_budget,budget_remaining,campaign_id"
+        f"&access_token={ACCESS_TOKEN}"
+    )
+    while True:
+        try:
+            response = session.get(url, timeout=60)
+            data = response.json()
+
+            if "error" in data:
+                logger.error(f"Error al obtener ad sets: {data['error']}")
+                break
+
+            for adset in data.get("data", []):
+                adset_id = adset["id"]
+                adset_budgets[adset_id] = {
+                    "name": adset.get("name"),
+                    "daily_budget": adset.get("daily_budget"),
+                    "lifetime_budget": adset.get("lifetime_budget"),
+                    "budget_remaining": adset.get("budget_remaining"),
+                    "campaign_id": adset.get("campaign_id"),
+                }
+
+            paging = data.get("paging", {})
+            next_page = paging.get("next")
+            if not next_page:
+                break
+            url = next_page
+
+        except requests.exceptions.Timeout:
+            logger.warning("Se agotó el tiempo de espera al consultar ad sets. Reintentando en 30 seg...")
+            time.sleep(30)
+            continue
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error al obtener ad sets: {e}")
+            break
+
+    logger.info(f"Se obtuvieron {len(adset_budgets)} conjuntos de anuncios con presupuesto.")
+    return adset_budgets
+
+# -----------------------------------------------------------------------------
+# 3.2) Función para obtener información de presupuesto de las campañas (CBO)
+# -----------------------------------------------------------------------------
+def fetch_campaign_budgets():
+    """
+    Obtiene la información de presupuesto de las campañas (CBO).
+    Retorna un diccionario con la forma:
+    {
+       'CAMPAIGN_ID_1': {
+           'name': 'Nombre de la campaña',
+           'daily_budget': 'valor',
+           'lifetime_budget': 'valor',
+           'budget_remaining': 'valor',
+       },
+       ...
+    }
+    """
+    campaign_budgets = {}
+    session = requests.Session()
+    url = (
+        f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/campaigns"
+        f"?fields=id,name,daily_budget,lifetime_budget,budget_remaining"
+        f"&access_token={ACCESS_TOKEN}"
+    )
+    while True:
+        try:
+            response = session.get(url, timeout=60)
+            data = response.json()
+
+            if "error" in data:
+                logger.error(f"Error al obtener campañas: {data['error']}")
+                break
+
+            for campaign in data.get("data", []):
+                campaign_id = campaign["id"]
+                campaign_budgets[campaign_id] = {
+                    "name": campaign.get("name"),
+                    "daily_budget": campaign.get("daily_budget"),
+                    "lifetime_budget": campaign.get("lifetime_budget"),
+                    "budget_remaining": campaign.get("budget_remaining"),
+                }
+
+            paging = data.get("paging", {})
+            next_page = paging.get("next")
+            if not next_page:
+                break
+            url = next_page
+
+        except requests.exceptions.Timeout:
+            logger.warning("Se agotó el tiempo de espera al consultar campañas. Reintentando en 30 seg...")
+            time.sleep(30)
+            continue
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error al obtener campañas: {e}")
+            break
+
+    logger.info(f"Se obtuvieron {len(campaign_budgets)} campañas con presupuesto.")
+    return campaign_budgets
+
+# -----------------------------------------------------------------------------
 # 4) Paginación en la API de Insights (nivel=ad) con timeout y reintentos
 # -----------------------------------------------------------------------------
 def fetch_all_insights(base_url):
@@ -207,26 +327,38 @@ def fetch_all_insights(base_url):
     return all_data
 
 # -----------------------------------------------------------------------------
-# 5) Procesar cada fila de Insights (crear 'id' único) + status
+# 5) Procesar cada fila de Insights (crear 'id' único) + status + presupuesto ABO
 # -----------------------------------------------------------------------------
-def process_insight(insight, ads_status_map):
-    """
-    Procesa cada registro 'insight' y retorna un dict con columnas planas,
-    dejando 'actions' y 'action_values' como JSON anidados.
-    """
+def process_insight(insight, ads_status_map, adset_budgets, campaign_budgets):
     try:
         ad_id = insight.get("ad_id", "unknown")
+        adset_id = insight.get("adset_id", "unknown")
+        campaign_id = insight.get("campaign_id", "unknown")
         date_start = insight.get("date_start", "unknown")
-
-        # Generar un ID único sin age y gender
         unique_id = f"{ad_id}_{date_start}"
 
-        # Obtener status y effective_status del anuncio
         ad_status_info = ads_status_map.get(ad_id, {})
         status = ad_status_info.get("status", "unknown")
         effective_status = ad_status_info.get("effective_status", "unknown")
 
-        # Definir tipos de acción que se consideran como compra
+        # Presupuesto a nivel de ad set
+        daily_budget_adset = None
+        lifetime_budget_adset = None
+        budget_remaining_adset = None
+        if adset_id in adset_budgets:
+            daily_budget_adset = adset_budgets[adset_id].get("daily_budget")
+            lifetime_budget_adset = adset_budgets[adset_id].get("lifetime_budget")
+            budget_remaining_adset = adset_budgets[adset_id].get("budget_remaining")
+
+        # Presupuesto a nivel de campaña
+        daily_budget_campaign = None
+        lifetime_budget_campaign = None
+        budget_remaining_campaign = None
+        if campaign_id in campaign_budgets:
+            daily_budget_campaign = campaign_budgets[campaign_id].get("daily_budget")
+            lifetime_budget_campaign = campaign_budgets[campaign_id].get("lifetime_budget")
+            budget_remaining_campaign = campaign_budgets[campaign_id].get("budget_remaining")
+
         purchase_types = {
             "purchase",
             "onsite_web_purchase",
@@ -236,21 +368,15 @@ def process_insight(insight, ads_status_map):
             "web_in_store_purchase"
         }
 
-        # (1) Acciones anidadas como JSON
         actions = insight.get("actions", [])
-        actions_json = json.dumps(actions)  # Guarda la lista completa como string JSON
-
-        # Extraer el número de compras (eventos) desde 'actions'
+        actions_json = json.dumps(actions)
         purchases = 0
         for action in actions:
             if action.get("action_type") in purchase_types:
                 purchases += int(action.get("value", 0))
 
-        # (2) Action_values anidados como JSON
         action_values = insight.get("action_values", [])
-        action_values_json = json.dumps(action_values)  # Guarda la lista completa como string JSON
-
-        # Extraer el valor monetario total de las compras
+        action_values_json = json.dumps(action_values)
         purchase_value = 0.0
         for av in action_values:
             if av.get("action_type") in purchase_types:
@@ -260,9 +386,9 @@ def process_insight(insight, ads_status_map):
             "id": unique_id,
             "ad_id": ad_id,
             "ad_name": insight.get("ad_name"),
-            "adset_id": insight.get("adset_id"),
+            "adset_id": adset_id,
             "adset_name": insight.get("adset_name"),
-            "campaign_id": insight.get("campaign_id"),
+            "campaign_id": campaign_id,
             "campaign_name": insight.get("campaign_name"),
             "impressions": insight.get("impressions"),
             "clicks": insight.get("clicks"),
@@ -270,12 +396,20 @@ def process_insight(insight, ads_status_map):
             "spend": insight.get("spend"),
             "date_start": date_start,
             "date_stop": insight.get("date_stop", "unknown"),
-            "actions": actions_json,            # Guarda la lista original como JSON
-            "action_values": action_values_json, # Guarda la lista original como JSON
-            "purchases": purchases,             # Número de eventos de compra
-            "purchase_value": purchase_value,    # Monto total de compras
+            "actions": actions_json,
+            "action_values": action_values_json,
+            "purchases": purchases,
+            "purchase_value": purchase_value,
             "status": status,
-            "effective_status": effective_status
+            "effective_status": effective_status,
+            # Presupuesto a nivel ad set
+            "daily_budget_adset": daily_budget_adset,
+            "lifetime_budget_adset": lifetime_budget_adset,
+            "budget_remaining_adset": budget_remaining_adset,
+            # Presupuesto a nivel campaña
+            "daily_budget_campaign": daily_budget_campaign,
+            "lifetime_budget_campaign": lifetime_budget_campaign,
+            "budget_remaining_campaign": budget_remaining_campaign
         }
 
     except Exception as e:
@@ -285,14 +419,7 @@ def process_insight(insight, ads_status_map):
 # -----------------------------------------------------------------------------
 # 6) Función principal de extracción + carga (con batch interno y global)
 # -----------------------------------------------------------------------------
-def extract_insights_meta(days_back=3):
-    """
-    Obtiene Insights de los últimos 'days_back' días a nivel de anuncio,
-    usando 2 niveles de batch:
-      - BATCH_SIZE=500 (subidas parciales a BQ)
-      - MAX_RECORDS=20000 (cada 20k procesados, sube a BQ y reinicia conteo)
-    Maneja timeouts y reintentos.
-    """
+def extract_insights_meta(days_back=100):
     now_chile = datetime.now(CHILE_TZ)
     start_date_chile = now_chile - timedelta(days=days_back)
     end_date_chile = now_chile
@@ -305,7 +432,13 @@ def extract_insights_meta(days_back=3):
     # 1) Info de status de anuncios
     ads_status_map = fetch_all_ads_status()
 
-    # 2) URL base (SIN breakdowns de age y gender)
+    # 2) Info de presupuesto de ad sets (ABO)
+    adset_budgets = fetch_adset_budgets()
+
+    # 2.1) Info de presupuesto a nivel de campaña (CBO)
+    campaign_budgets = fetch_campaign_budgets()
+
+    # 3) URL base
     base_url = (
         f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/insights"
         f"?level=ad"
@@ -317,19 +450,20 @@ def extract_insights_meta(days_back=3):
         f"&access_token={ACCESS_TOKEN}"
     )
 
-    # 3) IDs existentes
+    # 4) IDs existentes en BigQuery
     existing_ids = fetch_existing_ids_from_bigquery()
 
-    # 4) Paginar para obtener todos los insights
+    # 5) Paginar para obtener todos los insights
     all_insights = fetch_all_insights(base_url)
 
-    # 5) Procesar y cargar con batch interno y global
+    # 6) Procesar y cargar con batch interno y global
     buffer = []
     new_records = 0
     count_total = 0  # Contador global de registros
 
     for insight in all_insights:
-        record = process_insight(insight, ads_status_map)
+        # Ahora se pasan los 4 argumentos requeridos a process_insight
+        record = process_insight(insight, ads_status_map, adset_budgets, campaign_budgets)
         if not record:
             continue
 
@@ -369,7 +503,7 @@ def extract_insights_meta(days_back=3):
 if __name__ == "__main__":
     start_time = datetime.now()
 
-    extract_insights_meta(days_back=3)
+    extract_insights_meta(days_back=100)
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()

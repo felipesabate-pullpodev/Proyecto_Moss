@@ -20,7 +20,9 @@ WITH base AS (
     status,
     effective_status,
     action_values,
-    actions
+    actions,
+    daily_budget_adset,
+    daily_budget_campaign
   FROM `moss-448416.dataset.meta_insights`
 ),
 agg_actions AS (
@@ -108,6 +110,8 @@ SELECT
   b.date_start,
   b.date_stop,
   b.status,
+  b.daily_budget_adset AS adset_daily_budget,
+  b.daily_budget_campaign AS campaign_daily_budget,
   b.effective_status,
   b.action_values,
   b.actions,
