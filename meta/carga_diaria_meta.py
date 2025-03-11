@@ -30,44 +30,25 @@ ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN")
 BIGQUERY_PROJECT_ID = os.getenv("BIGQUERY_PROJECT_ID")
 BIGQUERY_DATASET = os.getenv("BIGQUERY_DATASET")
 BIGQUERY_TABLE = 'meta_insights'
+STAGING_TABLE = 'meta_insights_staging'   # Tabla de staging para el MERGE
 BIGQUERY_KEY_PATH = os.getenv("BIGQUERY_KEY_PATH")
 
 # Niveles de batch
-BATCH_SIZE = 500        # batch interno: cada 500 registros subimos a BigQuery
-MAX_RECORDS = 20000     # batch global: cada 20,000 registros, forzamos otra subida + reset
+BATCH_SIZE = 500        # Batch interno: cada 500 registros se carga a staging y se hace MERGE
+MAX_RECORDS = 20000     # Batch global: cada 20,000 registros se fuerza una carga + reset
 
 CHILE_TZ = pytz.timezone("America/Santiago")
 
 # -----------------------------------------------------------------------------
-# 2) Funciones de BigQuery
+# 2) Función para cargar datos a BigQuery con upsert (MERGE)
 # -----------------------------------------------------------------------------
-def fetch_existing_ids_from_bigquery():
+def load_to_bigquery_upsert(df):
     """
-    Obtiene los IDs existentes en BigQuery para evitar duplicados.
-    """
-    try:
-        client = bigquery.Client.from_service_account_json(
-            BIGQUERY_KEY_PATH,
-            project=BIGQUERY_PROJECT_ID
-        )
-        table_id = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
-
-        query = f"SELECT id FROM `{table_id}`"
-        result = client.query(query).result()
-
-        existing_ids = {row.id for row in result}
-        logger.info(f" Se encontraron {len(existing_ids)} registros existentes en BigQuery.")
-        return existing_ids
-    except Exception as e:
-        logger.error(f" Error al consultar BigQuery: {e}")
-        return set()
-
-def load_to_bigquery(df):
-    """
-    Carga un DataFrame a BigQuery, eliminando duplicados y anexando datos.
+    Carga un DataFrame a una tabla de staging en BigQuery y luego ejecuta un MERGE
+    para actualizar o insertar registros en la tabla destino.
     """
     if df.empty:
-        logger.info(" No hay datos nuevos para cargar en BigQuery.")
+        logger.info("No hay datos nuevos para cargar en BigQuery.")
         return
 
     try:
@@ -75,21 +56,71 @@ def load_to_bigquery(df):
             BIGQUERY_KEY_PATH,
             project=BIGQUERY_PROJECT_ID
         )
-        table_id = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
+        destination_table = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
+        staging_table = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{STAGING_TABLE}"
 
+        # Cargar a la tabla de staging (sobrescribe la tabla de staging)
         job_config = bigquery.LoadJobConfig(
-            write_disposition=bigquery.WriteDisposition.WRITE_APPEND,
+            write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
             autodetect=True
         )
+        load_job = client.load_table_from_dataframe(df, staging_table, job_config=job_config)
+        load_job.result()  # Esperar la carga a staging
+        logger.info(f"Cargados {len(df)} registros en la tabla de staging {staging_table}.")
 
-        df.drop_duplicates(subset=["id"], inplace=True)
+        # Ejecutar MERGE para actualizar/inserir en la tabla destino
+        merge_query = f"""
+        MERGE `{destination_table}` T
+        USING `{staging_table}` S
+        ON T.id = S.id
+        WHEN MATCHED THEN
+          UPDATE SET
+            ad_id = S.ad_id,
+            ad_name = S.ad_name,
+            adset_id = S.adset_id,
+            adset_name = S.adset_name,
+            campaign_id = S.campaign_id,
+            campaign_name = S.campaign_name,
+            impressions = S.impressions,
+            clicks = S.clicks,
+            ctr = S.ctr,
+            spend = S.spend,
+            date_start = S.date_start,
+            date_stop = S.date_stop,
+            actions = S.actions,
+            action_values = S.action_values,
+            purchases = S.purchases,
+            purchase_value = S.purchase_value,
+            status = S.status,
+            effective_status = S.effective_status,
+            daily_budget_adset = S.daily_budget_adset,
+            lifetime_budget_adset = S.lifetime_budget_adset,
+            budget_remaining_adset = S.budget_remaining_adset,
+            daily_budget_campaign = S.daily_budget_campaign,
+            lifetime_budget_campaign = S.lifetime_budget_campaign,
+            budget_remaining_campaign = S.budget_remaining_campaign
+        WHEN NOT MATCHED THEN
+          INSERT (
+            id, ad_id, ad_name, adset_id, adset_name, campaign_id, campaign_name,
+            impressions, clicks, ctr, spend, date_start, date_stop,
+            actions, action_values, purchases, purchase_value, status, effective_status,
+            daily_budget_adset, lifetime_budget_adset, budget_remaining_adset,
+            daily_budget_campaign, lifetime_budget_campaign, budget_remaining_campaign
+          )
+          VALUES(
+            S.id, S.ad_id, S.ad_name, S.adset_id, S.adset_name, S.campaign_id, S.campaign_name,
+            S.impressions, S.clicks, S.ctr, S.spend, S.date_start, S.date_stop,
+            S.actions, S.action_values, S.purchases, S.purchase_value, S.status, S.effective_status,
+            S.daily_budget_adset, S.lifetime_budget_adset, S.budget_remaining_adset,
+            S.daily_budget_campaign, S.lifetime_budget_campaign, S.budget_remaining_campaign
+          )
+        """
+        merge_job = client.query(merge_query)
+        merge_job.result()
+        logger.info("Carga y actualización completadas mediante MERGE.")
 
-        load_job = client.load_table_from_dataframe(df, table_id, job_config=job_config)
-        load_job.result()  # Esperar la carga
-
-        logger.info(f" Cargados {len(df)} registros nuevos a BigQuery en {table_id}.")
     except Exception as e:
-        logger.error(f" Error al cargar datos en BigQuery: {e}")
+        logger.error(f"Error al cargar datos en BigQuery: {e}")
 
 # -----------------------------------------------------------------------------
 # 3) Función para obtener TODOS los anuncios y su status de la cuenta
@@ -118,7 +149,7 @@ def fetch_all_ads_status():
             data = response.json()
 
             if "error" in data:
-                logger.error(f" Ocurrió un error al obtener Ads: {data['error']}")
+                logger.error(f"Ocurrió un error al obtener Ads: {data['error']}")
                 break
 
             ads_data = data.get("data", [])
@@ -134,11 +165,11 @@ def fetch_all_ads_status():
             next_page = paging.get("next")
 
             if not next_page:
-                logger.info(" No hay más páginas en /ads.")
+                logger.info("No hay más páginas en /ads.")
                 break
             else:
                 url = next_page
-                logger.info(f" Obtenidos {len(ads_data)} anuncios, avanzando a la siguiente página...")
+                logger.info(f"Obtenidos {len(ads_data)} anuncios, avanzando a la siguiente página...")
 
         except requests.exceptions.Timeout:
             logger.warning("Se agotó el tiempo de espera (Timeout) en /ads. Reintentando en 30 seg...")
@@ -146,10 +177,10 @@ def fetch_all_ads_status():
             continue
 
         except requests.exceptions.RequestException as e:
-            logger.error(f" Error al obtener datos de Ads: {e}")
+            logger.error(f"Error al obtener datos de Ads: {e}")
             break
 
-    logger.info(f" Total de anuncios obtenidos: {len(ads_status_map)}")
+    logger.info(f"Total de anuncios obtenidos: {len(ads_status_map)}")
     return ads_status_map
 
 # -----------------------------------------------------------------------------
@@ -303,17 +334,17 @@ def fetch_all_insights(base_url):
 
             insights = data.get("data", [])
             all_data.extend(insights)
-            logger.info(f" Recibidos {len(insights)} registros en esta página.")
+            logger.info(f"Recibidos {len(insights)} registros en esta página.")
 
             paging = data.get("paging", {})
             next_page = paging.get("next")
 
             if not next_page:
-                logger.info(" No hay más páginas de Insights.")
+                logger.info("No hay más páginas de Insights.")
                 break
             else:
                 url = next_page
-                logger.info(" Avanzando a la siguiente página...")
+                logger.info("Avanzando a la siguiente página...")
 
         except requests.exceptions.Timeout:
             logger.warning("Se agotó el tiempo de espera (Timeout) en Insights. Reintentando en 30 seg...")
@@ -321,7 +352,7 @@ def fetch_all_insights(base_url):
             continue
 
         except requests.exceptions.RequestException as e:
-            logger.error(f" Error al obtener datos de Insights: {e}")
+            logger.error(f"Error al obtener datos de Insights: {e}")
             break
 
     return all_data
@@ -335,6 +366,8 @@ def process_insight(insight, ads_status_map, adset_budgets, campaign_budgets):
         adset_id = insight.get("adset_id", "unknown")
         campaign_id = insight.get("campaign_id", "unknown")
         date_start = insight.get("date_start", "unknown")
+        # Generamos un id único basado en ad_id y date_start (si se quiere actualizar a lo largo del día,
+        # mantener este formato permitirá usar el upsert para actualizar el spend)
         unique_id = f"{ad_id}_{date_start}"
 
         ad_status_info = ads_status_map.get(ad_id, {})
@@ -427,7 +460,7 @@ def extract_insights_meta(days_back=2):
     since_str = start_date_chile.strftime("%Y-%m-%d")
     until_str = end_date_chile.strftime("%Y-%m-%d")
 
-    logger.info(f" Extrayendo Insights (ad level) desde {since_str} hasta {until_str}.")
+    logger.info(f"Extrayendo Insights (ad level) desde {since_str} hasta {until_str}.")
 
     # 1) Info de status de anuncios
     ads_status_map = fetch_all_ads_status()
@@ -438,7 +471,7 @@ def extract_insights_meta(days_back=2):
     # 2.1) Info de presupuesto a nivel de campaña (CBO)
     campaign_budgets = fetch_campaign_budgets()
 
-    # 3) URL base
+    # 3) URL base de Insights
     base_url = (
         f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/insights"
         f"?level=ad"
@@ -450,52 +483,46 @@ def extract_insights_meta(days_back=2):
         f"&access_token={ACCESS_TOKEN}"
     )
 
-    # 4) IDs existentes en BigQuery
-    existing_ids = fetch_existing_ids_from_bigquery()
-
-    # 5) Paginar para obtener todos los insights
+    # 4) Paginar para obtener todos los insights
     all_insights = fetch_all_insights(base_url)
 
-    # 6) Procesar y cargar con batch interno y global
+    # 5) Procesar y cargar con batch interno y global
     buffer = []
     new_records = 0
     count_total = 0  # Contador global de registros
 
     for insight in all_insights:
-        # Ahora se pasan los 4 argumentos requeridos a process_insight
         record = process_insight(insight, ads_status_map, adset_budgets, campaign_budgets)
         if not record:
             continue
 
-        # Verificar duplicado
-        if record["id"] in existing_ids:
-            continue
-
+        # Aquí ya no se descarta el registro por existir un id previo,
+        # ya que el MERGE se encargará de actualizar si es necesario.
         buffer.append(record)
         new_records += 1
         count_total += 1
 
-        # Batch interno (cada 500)
+        # Batch interno (cada 500 registros)
         if len(buffer) >= BATCH_SIZE:
             df = pd.DataFrame(buffer)
-            load_to_bigquery(df)
+            load_to_bigquery_upsert(df)
             buffer = []
 
-        # Batch global (cada 20,000)
+        # Batch global (cada 20,000 registros)
         if count_total >= MAX_RECORDS:
             if buffer:
                 df = pd.DataFrame(buffer)
-                load_to_bigquery(df)
+                load_to_bigquery_upsert(df)
                 buffer = []
-            logger.info(f" Alcanzado el límite global de {MAX_RECORDS} registros. Reseteando contador.")
+            logger.info(f"Alcanzado el límite global de {MAX_RECORDS} registros. Reseteando contador.")
             count_total = 0
 
     # Al finalizar, subimos lo que quede en buffer
     if buffer:
         df = pd.DataFrame(buffer)
-        load_to_bigquery(df)
+        load_to_bigquery_upsert(df)
 
-    logger.info(f" Finalizado. Se procesaron {new_records} registros nuevos.")
+    logger.info(f"Finalizado. Se procesaron {new_records} registros nuevos.")
 
 # -----------------------------------------------------------------------------
 # 7) Main
@@ -507,4 +534,4 @@ if __name__ == "__main__":
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
-    logger.info(f" Ejecución completa en {duration} segundos.")
+    logger.info(f"Ejecución completa en {duration} segundos.")
