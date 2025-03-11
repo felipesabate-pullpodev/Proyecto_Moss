@@ -419,7 +419,7 @@ def process_insight(insight, ads_status_map, adset_budgets, campaign_budgets):
 # -----------------------------------------------------------------------------
 # 6) Función principal de extracción + carga (con batch interno y global)
 # -----------------------------------------------------------------------------
-def extract_insights_meta(days_back=100):
+def extract_insights_meta(days_back=2):
     now_chile = datetime.now(CHILE_TZ)
     start_date_chile = now_chile - timedelta(days=days_back)
     end_date_chile = now_chile
@@ -503,7 +503,7 @@ def extract_insights_meta(days_back=100):
 if __name__ == "__main__":
     start_time = datetime.now()
 
-    extract_insights_meta(days_back=100)
+    extract_insights_meta(days_back=2)
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
