@@ -44,8 +44,8 @@ CHILE_TZ = pytz.timezone("America/Santiago")
 # -----------------------------------------------------------------------------
 def load_to_bigquery_upsert(df):
     """
-    Carga un DataFrame a una tabla de staging en BigQuery y luego ejecuta un MERGE
-    para actualizar o insertar registros en la tabla destino.
+    Carga un DataFrame a una tabla de staging en BigQuery (creándola si no existe)
+    y luego ejecuta un MERGE para insertar o actualizar (upsert) en la tabla final.
     """
     if df.empty:
         logger.info("No hay datos nuevos para cargar en BigQuery.")
@@ -59,16 +59,29 @@ def load_to_bigquery_upsert(df):
         destination_table = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{BIGQUERY_TABLE}"
         staging_table = f"{BIGQUERY_PROJECT_ID}.{BIGQUERY_DATASET}.{STAGING_TABLE}"
 
-        # Cargar a la tabla de staging (sobrescribe la tabla de staging)
+        # 1. Cargar los datos a la tabla de staging
+        #    create_disposition=CREATE_IF_NEEDED crea la tabla staging si no existe.
+        #    write_disposition=WRITE_TRUNCATE sobreescribe la tabla de staging cada vez.
         job_config = bigquery.LoadJobConfig(
+            create_disposition=bigquery.CreateDisposition.CREATE_IF_NEEDED,
             write_disposition=bigquery.WriteDisposition.WRITE_TRUNCATE,
             autodetect=True
         )
         load_job = client.load_table_from_dataframe(df, staging_table, job_config=job_config)
-        load_job.result()  # Esperar la carga a staging
+        load_job.result()  # Espera a que termine la carga
         logger.info(f"Cargados {len(df)} registros en la tabla de staging {staging_table}.")
 
-        # Ejecutar MERGE para actualizar/inserir en la tabla destino
+        # 2. Asegurarnos de que la tabla final exista
+        #    Si la tabla final no existe, la creamos vacía usando la estructura de staging.
+        #    Para ello, usamos un CREATE TABLE IF NOT EXISTS ... SELECT * FROM staging WHERE false
+        init_query = f"""
+        CREATE TABLE IF NOT EXISTS `{destination_table}`
+        AS SELECT * FROM `{staging_table}`
+        WHERE 1=0
+        """
+        client.query(init_query).result()
+
+        # 3. Ejecutar MERGE para insertar o actualizar (upsert) en la tabla final
         merge_query = f"""
         MERGE `{destination_table}` T
         USING `{staging_table}` S
@@ -117,6 +130,7 @@ def load_to_bigquery_upsert(df):
         """
         merge_job = client.query(merge_query)
         merge_job.result()
+
         logger.info("Carga y actualización completadas mediante MERGE.")
 
     except Exception as e:
@@ -128,12 +142,8 @@ def load_to_bigquery_upsert(df):
 # -----------------------------------------------------------------------------
 def fetch_all_ads_status():
     """
-    Devuelve un diccionario con la forma:
-      {
-        '1234567890': {'status': 'ACTIVE', 'effective_status': 'ACTIVE'},
-        ...
-      }
-    Maneja paginación y timeout con reintentos.
+    Obtiene el estado de los anuncios con manejo de rate limits y reintentos.
+    Implementa un Exponential Backoff para evitar bloqueos.
     """
     ads_status_map = {}
     session = requests.Session()
@@ -143,44 +153,64 @@ def fetch_all_ads_status():
         f"&access_token={ACCESS_TOKEN}"
     )
 
+    retries = 0
+    max_retries = 5  # Máximo de intentos antes de abortar
+    wait_time = 300  # Tiempo de espera inicial en segundos (5 minutos)
+
     while True:
         try:
             response = session.get(url, timeout=60)
             data = response.json()
 
+            # Si hay error, manejar el límite de llamadas
             if "error" in data:
-                logger.error(f"Ocurrió un error al obtener Ads: {data['error']}")
-                break
+                error_data = data["error"]
+                
+                if error_data.get("code") == 17:  # Rate Limit Exceeded
+                    retries += 1
+                    if retries > max_retries:
+                        logger.error("❌ Se alcanzó el límite de reintentos. Abortando extracción.")
+                        break
+
+                    logger.warning(f"🚨 Límite de llamadas alcanzado. Pausando {wait_time//60} minutos...")
+                    time.sleep(wait_time)
+                    wait_time *= 2  # Incrementar la espera de manera exponencial
+                    continue  # Reintentar después de la pausa
+
+                else:
+                    logger.error(f"❌ Error en la API de Meta: {error_data}")
+                    break
 
             ads_data = data.get("data", [])
             for ad in ads_data:
-                ad_id = ad.get("id", None)
+                ad_id = ad.get("id")
                 if ad_id:
                     ads_status_map[ad_id] = {
                         "status": ad.get("status", "unknown"),
-                        "effective_status": ad.get("effective_status", "unknown")
+                        "effective_status": ad.get("effective_status", "unknown"),
                     }
 
             paging = data.get("paging", {})
             next_page = paging.get("next")
 
             if not next_page:
-                logger.info("No hay más páginas en /ads.")
+                logger.info("✅ No hay más páginas en /ads.")
                 break
             else:
                 url = next_page
-                logger.info(f"Obtenidos {len(ads_data)} anuncios, avanzando a la siguiente página...")
+                logger.info(f"✅ Obtenidos {len(ads_data)} anuncios, avanzando a la siguiente página...")
+                time.sleep(1)  # Reducir velocidad de llamadas a la API
 
         except requests.exceptions.Timeout:
-            logger.warning("Se agotó el tiempo de espera (Timeout) en /ads. Reintentando en 30 seg...")
+            logger.warning("⚠️ Timeout en Ads. Reintentando en 30 segundos...")
             time.sleep(30)
             continue
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error al obtener datos de Ads: {e}")
+            logger.error(f"❌ Error en la API de Ads: {e}")
             break
 
-    logger.info(f"Total de anuncios obtenidos: {len(ads_status_map)}")
+    logger.info(f"✅ Total de anuncios obtenidos: {len(ads_status_map)}")
     return ads_status_map
 
 # -----------------------------------------------------------------------------
@@ -308,12 +338,15 @@ def fetch_campaign_budgets():
 # -----------------------------------------------------------------------------
 def fetch_all_insights(base_url):
     """
-    Llama a la API con paginación, maneja timeouts, errores de rate limit y reintentos.
-    Retorna una lista con todos los 'data' combinados.
+    Llama a la API de Insights con paginación y manejo de rate limits.
+    Implementa un Exponential Backoff para evitar bloqueos.
     """
     all_data = []
     session = requests.Session()
     url = base_url
+    retries = 0
+    max_retries = 5  # Máximo de intentos antes de abortar
+    wait_time = 30  # Tiempo de espera inicial en segundos
 
     while True:
         try:
@@ -323,36 +356,44 @@ def fetch_all_insights(base_url):
             # Si se detecta un error, verificamos si es por límite de llamadas
             if "error" in data:
                 error_data = data["error"]
-                # Si el error es de límite de llamadas (rate limit), pausamos
-                if error_data.get("code") == 80000:
-                    logger.warning("Rate limit alcanzado. Pausando la ejecución por 300 segundos...")
-                    time.sleep(300)  # Pausa de 5 minutos
-                    continue  # Reintentar la misma URL después de la pausa
+                
+                if error_data.get("code") == 17:  # Límite de llamadas alcanzado
+                    retries += 1
+                    if retries > max_retries:
+                        logger.error("❌ Se alcanzó el límite de reintentos. Abortando extracción.")
+                        break
+
+                    logger.warning(f"🚨 Rate limit alcanzado. Reintentando en {wait_time} segundos...")
+                    time.sleep(wait_time)
+                    wait_time *= 2  # Aumentar el tiempo de espera (Exponential Backoff)
+                    continue  # Volver a intentar la misma URL después de la pausa
+
                 else:
-                    logger.error(f"Ocurrió un error en la API de Meta: {error_data}")
+                    logger.error(f"❌ Error en la API de Meta: {error_data}")
                     break
 
             insights = data.get("data", [])
             all_data.extend(insights)
-            logger.info(f"Recibidos {len(insights)} registros en esta página.")
+            logger.info(f"✅ Recibidos {len(insights)} registros en esta página.")
 
             paging = data.get("paging", {})
             next_page = paging.get("next")
 
             if not next_page:
-                logger.info("No hay más páginas de Insights.")
+                logger.info("✅ No hay más páginas de Insights.")
                 break
             else:
                 url = next_page
-                logger.info("Avanzando a la siguiente página...")
+                logger.info("🔄 Avanzando a la siguiente página...")
+                time.sleep(1)  # Pequeña pausa para evitar exceso de llamadas
 
         except requests.exceptions.Timeout:
-            logger.warning("Se agotó el tiempo de espera (Timeout) en Insights. Reintentando en 30 seg...")
+            logger.warning("⚠️ Timeout en Insights. Reintentando en 30 segundos...")
             time.sleep(30)
             continue
 
         except requests.exceptions.RequestException as e:
-            logger.error(f"Error al obtener datos de Insights: {e}")
+            logger.error(f"❌ Error en la API de Insights: {e}")
             break
 
     return all_data
@@ -452,7 +493,7 @@ def process_insight(insight, ads_status_map, adset_budgets, campaign_budgets):
 # -----------------------------------------------------------------------------
 # 6) Función principal de extracción + carga (con batch interno y global)
 # -----------------------------------------------------------------------------
-def extract_insights_meta(days_back=2):
+def extract_insights_meta(days_back=3):
     now_chile = datetime.now(CHILE_TZ)
     start_date_chile = now_chile - timedelta(days=days_back)
     end_date_chile = now_chile
@@ -502,6 +543,9 @@ def extract_insights_meta(days_back=2):
         new_records += 1
         count_total += 1
 
+        # Añadimos un sleep extra entre registros (por ejemplo, 0.1 segundos)
+        time.sleep(0.1)
+
         # Batch interno (cada 500 registros)
         if len(buffer) >= BATCH_SIZE:
             df = pd.DataFrame(buffer)
@@ -530,7 +574,7 @@ def extract_insights_meta(days_back=2):
 if __name__ == "__main__":
     start_time = datetime.now()
 
-    extract_insights_meta(days_back=2)
+    extract_insights_meta(days_back=3)
 
     end_time = datetime.now()
     duration = (end_time - start_time).total_seconds()
