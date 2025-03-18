@@ -20,10 +20,8 @@ PERIOD = 60  # Periodo en segundos
 
 @sleep_and_retry
 @limits(calls=CALLS, period=PERIOD)
-def rate_limited_get(url, timeout=150):
-    """
-    Función que envuelve requests.get aplicando un límite de llamadas.
-    """
+def rate_limited_get(url, timeout=60):
+    """Función que envuelve requests.get aplicando un límite de llamadas."""
     return requests.get(url, timeout=timeout)
 
 # -----------------------------------------------------------------------------
@@ -39,6 +37,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Variables de entorno / Credenciales
 # Variables de entorno / Credenciales
 AD_ACCOUNT_ID = os.getenv("FB_AD_ACCOUNT_ID")     
 ACCESS_TOKEN = os.getenv("FB_ACCESS_TOKEN")       
@@ -65,6 +64,23 @@ def load_to_bigquery_upsert(df):
     if df.empty:
         logger.info("No hay datos nuevos para cargar en BigQuery.")
         return
+
+    # Función auxiliar para convertir a entero
+    def convert_to_int(value):
+        try:
+            # Convertir el valor a entero si es numérico o una cadena numérica
+            # Si es una cadena vacía o no convertible, devuelve None
+            if pd.isna(value) or str(value).strip() == "":
+                return None
+            return int(float(value))
+        except Exception as e:
+            logger.warning(f"Error al convertir '{value}' a int: {e}")
+            return None
+
+    # Convertir columnas específicas a Int64 (nullable)
+    for col in ["daily_budget_campaign", "lifetime_budget_campaign", "budget_remaining_campaign"]:
+        if col in df.columns:
+            df[col] = df[col].apply(convert_to_int).astype("Int64")
 
     try:
         client = bigquery.Client.from_service_account_json(
@@ -152,10 +168,7 @@ def load_to_bigquery_upsert(df):
 #    (timeout y reintentos ante Timeout)
 # -----------------------------------------------------------------------------
 def fetch_all_ads_status():
-    """
-    Obtiene el estado de los anuncios con manejo de rate limits y reintentos.
-    Implementa un Exponential Backoff para evitar bloqueos.
-    """
+    """Obtiene el estado de los anuncios con manejo de rate limits y reintentos."""
     ads_status_map = {}
     url = (
         f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/ads"
@@ -164,8 +177,8 @@ def fetch_all_ads_status():
     )
 
     retries = 0
-    max_retries = 5  # Máximo de intentos antes de abortar
-    wait_time = 300  # Tiempo de espera inicial en segundos (5 minutos)
+    max_retries = 5
+    wait_time = 300
 
     while True:
         try:
@@ -174,16 +187,15 @@ def fetch_all_ads_status():
 
             if "error" in data:
                 error_data = data["error"]
-                if error_data.get("code") == 17:  # Rate Limit Exceeded
+                if error_data.get("code") == 17:
                     retries += 1
                     if retries > max_retries:
                         logger.error("❌ Se alcanzó el límite de reintentos. Abortando extracción.")
                         break
                     logger.warning(f"🚨 Límite de llamadas alcanzado. Pausando {wait_time//60} minutos...")
                     time.sleep(wait_time)
-                    wait_time *= 2  # Incrementar la espera de manera exponencial
+                    wait_time *= 2
                     continue
-
                 else:
                     logger.error(f"❌ Error en la API de Meta: {error_data}")
                     break
@@ -199,20 +211,17 @@ def fetch_all_ads_status():
 
             paging = data.get("paging", {})
             next_page = paging.get("next")
-
             if not next_page:
                 logger.info("✅ No hay más páginas en /ads.")
                 break
             else:
                 logger.info(f"✅ Obtenidos {len(ads_data)} anuncios, avanzando a la siguiente página...")
                 url = next_page
-                time.sleep(5)  # Aumenta la pausa entre solicitudes a 5 segundos
-
+                time.sleep(5)
         except requests.exceptions.Timeout:
             logger.warning("⚠️ Timeout en Ads. Reintentando en 30 segundos...")
             time.sleep(30)
             continue
-
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ Error en la API de Ads: {e}")
             break
@@ -224,20 +233,7 @@ def fetch_all_ads_status():
 # 3.1) Función para obtener información de presupuesto de los ad sets (ABO)
 # -----------------------------------------------------------------------------
 def fetch_adset_budgets():
-    """
-    Obtiene la información de presupuesto de los conjuntos de anuncios (ad sets).
-    Retorna un diccionario con la forma:
-    {
-       'ADSET_ID_1': {
-           'name': 'Nombre del conjunto',
-           'daily_budget': 'valor',
-           'lifetime_budget': 'valor',
-           'budget_remaining': 'valor',
-           'campaign_id': '...'
-       },
-       ...
-    }
-    """
+    """Obtiene la información de presupuesto de los conjuntos de anuncios (ad sets)."""
     adset_budgets = {}
     url = (
         f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/adsets"
@@ -248,11 +244,9 @@ def fetch_adset_budgets():
         try:
             response = rate_limited_get(url, timeout=60)
             data = response.json()
-
             if "error" in data:
                 logger.error(f"Error al obtener ad sets: {data['error']}")
                 break
-
             for adset in data.get("data", []):
                 adset_id = adset["id"]
                 adset_budgets[adset_id] = {
@@ -262,14 +256,12 @@ def fetch_adset_budgets():
                     "budget_remaining": adset.get("budget_remaining"),
                     "campaign_id": adset.get("campaign_id"),
                 }
-
             paging = data.get("paging", {})
             next_page = paging.get("next")
             if not next_page:
                 break
             url = next_page
-            time.sleep(5)  # Aumenta la pausa entre páginas
-
+            time.sleep(5)
         except requests.exceptions.Timeout:
             logger.warning("Se agotó el tiempo de espera al consultar ad sets. Reintentando en 30 seg...")
             time.sleep(30)
@@ -277,7 +269,6 @@ def fetch_adset_budgets():
         except requests.exceptions.RequestException as e:
             logger.error(f"Error al obtener ad sets: {e}")
             break
-
     logger.info(f"Se obtuvieron {len(adset_budgets)} conjuntos de anuncios con presupuesto.")
     return adset_budgets
 
@@ -285,19 +276,7 @@ def fetch_adset_budgets():
 # 3.2) Función para obtener información de presupuesto de las campañas (CBO)
 # -----------------------------------------------------------------------------
 def fetch_campaign_budgets():
-    """
-    Obtiene la información de presupuesto de las campañas (CBO).
-    Retorna un diccionario con la forma:
-    {
-       'CAMPAIGN_ID_1': {
-           'name': 'Nombre de la campaña',
-           'daily_budget': 'valor',
-           'lifetime_budget': 'valor',
-           'budget_remaining': 'valor'
-       },
-       ...
-    }
-    """
+    """Obtiene la información de presupuesto de las campañas (CBO)."""
     campaign_budgets = {}
     url = (
         f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/campaigns"
@@ -308,11 +287,9 @@ def fetch_campaign_budgets():
         try:
             response = rate_limited_get(url, timeout=60)
             data = response.json()
-
             if "error" in data:
                 logger.error(f"Error al obtener campañas: {data['error']}")
                 break
-
             for campaign in data.get("data", []):
                 campaign_id = campaign["id"]
                 campaign_budgets[campaign_id] = {
@@ -321,14 +298,12 @@ def fetch_campaign_budgets():
                     "lifetime_budget": campaign.get("lifetime_budget"),
                     "budget_remaining": campaign.get("budget_remaining"),
                 }
-
             paging = data.get("paging", {})
             next_page = paging.get("next")
             if not next_page:
                 break
             url = next_page
             time.sleep(5)
-
         except requests.exceptions.Timeout:
             logger.warning("Se agotó el tiempo de espera al consultar campañas. Reintentando en 30 seg...")
             time.sleep(30)
@@ -336,7 +311,6 @@ def fetch_campaign_budgets():
         except requests.exceptions.RequestException as e:
             logger.error(f"Error al obtener campañas: {e}")
             break
-
     logger.info(f"Se obtuvieron {len(campaign_budgets)} campañas con presupuesto.")
     return campaign_budgets
 
@@ -344,24 +318,19 @@ def fetch_campaign_budgets():
 # 4) Paginación en la API de Insights (nivel=ad) con timeout y reintentos
 # -----------------------------------------------------------------------------
 def fetch_all_insights(base_url):
-    """
-    Llama a la API de Insights con paginación y manejo de rate limits.
-    Implementa un Exponential Backoff para evitar bloqueos.
-    """
+    """Llama a la API de Insights con paginación y manejo de rate limits."""
     all_data = []
     url = base_url
     retries = 0
-    max_retries = 5  # Máximo de intentos antes de abortar
-    wait_time = 30  # Tiempo de espera inicial en segundos
-
+    max_retries = 5
+    wait_time = 30
     while True:
         try:
             response = rate_limited_get(url, timeout=60)
             data = response.json()
-
             if "error" in data:
                 error_data = data["error"]
-                if error_data.get("code") == 17:  # Límite de llamadas alcanzado
+                if error_data.get("code") == 17:
                     retries += 1
                     if retries > max_retries:
                         logger.error("❌ Se alcanzó el límite de reintentos. Abortando extracción.")
@@ -373,14 +342,11 @@ def fetch_all_insights(base_url):
                 else:
                     logger.error(f"❌ Error en la API de Meta: {error_data}")
                     break
-
             insights = data.get("data", [])
             all_data.extend(insights)
             logger.info(f"✅ Recibidos {len(insights)} registros en esta página.")
-
             paging = data.get("paging", {})
             next_page = paging.get("next")
-
             if not next_page:
                 logger.info("✅ No hay más páginas de Insights.")
                 break
@@ -388,7 +354,6 @@ def fetch_all_insights(base_url):
                 url = next_page
                 logger.info("🔄 Avanzando a la siguiente página...")
                 time.sleep(5)
-
         except requests.exceptions.Timeout:
             logger.warning("⚠️ Timeout en Insights. Reintentando en 30 segundos...")
             time.sleep(30)
@@ -396,7 +361,6 @@ def fetch_all_insights(base_url):
         except requests.exceptions.RequestException as e:
             logger.error(f"❌ Error en la API de Insights: {e}")
             break
-
     return all_data
 
 # -----------------------------------------------------------------------------
@@ -429,6 +393,21 @@ def process_insight(insight, ads_status_map, adset_budgets, campaign_budgets):
             daily_budget_campaign = campaign_budgets[campaign_id].get("daily_budget")
             lifetime_budget_campaign = campaign_budgets[campaign_id].get("lifetime_budget")
             budget_remaining_campaign = campaign_budgets[campaign_id].get("budget_remaining")
+            try:
+                daily_budget_campaign = int(daily_budget_campaign) if daily_budget_campaign is not None else None
+            except Exception as e:
+                logger.warning(f"Error al convertir daily_budget_campaign '{daily_budget_campaign}' a int: {e}")
+                daily_budget_campaign = None
+            try:
+                lifetime_budget_campaign = int(lifetime_budget_campaign) if lifetime_budget_campaign is not None else None
+            except Exception as e:
+                logger.warning(f"Error al convertir lifetime_budget_campaign '{lifetime_budget_campaign}' a int: {e}")
+                lifetime_budget_campaign = None
+            try:
+                budget_remaining_campaign = int(budget_remaining_campaign) if budget_remaining_campaign is not None else None
+            except Exception as e:
+                logger.warning(f"Error al convertir budget_remaining_campaign '{budget_remaining_campaign}' a int: {e}")
+                budget_remaining_campaign = None
 
         purchase_types = {
             "purchase",
@@ -480,7 +459,6 @@ def process_insight(insight, ads_status_map, adset_budgets, campaign_budgets):
             "lifetime_budget_campaign": lifetime_budget_campaign,
             "budget_remaining_campaign": budget_remaining_campaign
         }
-
     except Exception as e:
         logger.error(f"Error al procesar la fila de Insights: {e}")
         return None
@@ -488,26 +466,22 @@ def process_insight(insight, ads_status_map, adset_budgets, campaign_budgets):
 # -----------------------------------------------------------------------------
 # 6) Función principal de extracción + carga (con batch interno y global)
 # -----------------------------------------------------------------------------
-def extract_insights_meta(days_back=150):
+def extract_insights_meta(start_date=None, end_date=None):
+    """
+    Extrae Insights a nivel de anuncio para un rango de fechas.
+    Si no se especifican start_date y end_date, se extraen los datos de los 2 últimos días.
+    Los parámetros deben estar en formato "YYYY-MM-DD".
+    """
     now_chile = datetime.now(CHILE_TZ)
-    start_date_chile = now_chile - timedelta(days=days_back)
-    end_date_chile = now_chile
+    if start_date is None or end_date is None:
+        start_date = (now_chile - timedelta(days=2)).strftime("%Y-%m-%d")
+        end_date = now_chile.strftime("%Y-%m-%d")
+    logger.info(f"Extrayendo Insights (ad level) desde {start_date} hasta {end_date}.")
 
-    since_str = start_date_chile.strftime("%Y-%m-%d")
-    until_str = end_date_chile.strftime("%Y-%m-%d")
-
-    logger.info(f"Extrayendo Insights (ad level) desde {since_str} hasta {until_str}.")
-
-    # 1) Info de status de anuncios
     ads_status_map = fetch_all_ads_status()
-
-    # 2) Info de presupuesto de ad sets (ABO)
     adset_budgets = fetch_adset_budgets()
-
-    # 2.1) Info de presupuesto a nivel de campaña (CBO)
     campaign_budgets = fetch_campaign_budgets()
 
-    # 3) URL base de Insights
     base_url = (
         f"https://graph.facebook.com/v16.0/act_{AD_ACCOUNT_ID}/insights"
         f"?level=ad"
@@ -515,34 +489,27 @@ def extract_insights_meta(days_back=150):
         f"impressions,clicks,ctr,spend,actions,action_values"
         f"&action_breakdowns=action_type"
         f"&time_increment=1"
-        f"&time_range={{'since':'{since_str}','until':'{until_str}'}}"
+        f"&time_range={{'since':'{start_date}','until':'{end_date}'}}"
         f"&access_token={ACCESS_TOKEN}"
     )
 
-    # 4) Paginar para obtener todos los insights
     all_insights = fetch_all_insights(base_url)
-
-    # 5) Procesar y cargar con batch interno y global
     buffer = []
     new_records = 0
-    count_total = 0  # Contador global de registros
+    count_total = 0
 
     for insight in all_insights:
         record = process_insight(insight, ads_status_map, adset_budgets, campaign_budgets)
         if not record:
             continue
-
         buffer.append(record)
         new_records += 1
         count_total += 1
-
-        time.sleep(0.1)  # Pausa breve entre registros
-
+        time.sleep(0.1)
         if len(buffer) >= BATCH_SIZE:
             df = pd.DataFrame(buffer)
             load_to_bigquery_upsert(df)
             buffer = []
-
         if count_total >= MAX_RECORDS:
             if buffer:
                 df = pd.DataFrame(buffer)
@@ -554,17 +521,10 @@ def extract_insights_meta(days_back=150):
     if buffer:
         df = pd.DataFrame(buffer)
         load_to_bigquery_upsert(df)
-
     logger.info(f"Finalizado. Se procesaron {new_records} registros nuevos.")
 
 # -----------------------------------------------------------------------------
-# 7) Main
+# Main
 # -----------------------------------------------------------------------------
 if __name__ == "__main__":
-    start_time = datetime.now()
-
-    extract_insights_meta(days_back=150)
-
-    end_time = datetime.now()
-    duration = (end_time - start_time).total_seconds()
-    logger.info(f"Ejecución completa en {duration} segundos.")
+    extract_insights_meta(start_date="2025-03-01", end_date="2025-03-19")
